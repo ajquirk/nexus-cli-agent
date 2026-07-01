@@ -230,7 +230,6 @@ describe("SQLiteStorageManager Step Logging Operations", () => {
       tokenCountEstimate: 300,
     };
 
-    // Save in out-of-order sequence to ensure sorting relies on index rather than insert order
     await manager.saveStep(sessionId, 1, step1);
     await manager.saveStep(sessionId, 2, step2);
     await manager.saveStep(sessionId, 0, step0);
@@ -250,7 +249,6 @@ describe("SQLiteStorageManager Step Logging Operations", () => {
       toolName: "no_output_tool",
       args: {},
       tokenCountEstimate: 50,
-      // stdoutSummary is omitted
     };
 
     await manager.saveStep(sessionId, 0, stepRecord);
@@ -315,9 +313,9 @@ describe("SQLiteStorageManager Rate Limit Operations", () => {
     expect(cooldown).toBeNull();
   });
 
-  it("should save and retrieve a rate limit cooldown timestamp", async () => {
+  it("should save and retrieve a rate limit cooldown timestamp matching the TDD spec", async () => {
     const provider = "openai";
-    const resetEpoch = Date.now() + 60000;
+    const resetEpoch = 1782844800000;
 
     await manager.logRateLimitCooldown(provider, resetEpoch);
     const cooldown = await manager.getRateLimitCooldown(provider);
@@ -327,8 +325,8 @@ describe("SQLiteStorageManager Rate Limit Operations", () => {
 
   it("should correctly upsert and overwrite preexisting rate limit cooldowns for the same provider", async () => {
     const provider = "anthropic";
-    const initialReset = Date.now() + 10000;
-    const secondaryReset = Date.now() + 30000;
+    const initialReset = 1782844800000;
+    const secondaryReset = 1782844900000;
 
     await manager.logRateLimitCooldown(provider, initialReset);
     await manager.logRateLimitCooldown(provider, secondaryReset);
