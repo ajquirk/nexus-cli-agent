@@ -110,29 +110,122 @@ export class SQLiteStorageManagerImpl implements SQLiteStorageManager {
   }
 
   async saveStep(
-    _sessionId: string,
-    _stepIndex: number,
-    _payload: StepRecord,
+    sessionId: string,
+    stepIndex: number,
+    payload: StepRecord,
   ): Promise<void> {
-    // Defined as stub for future TASK implementation
-    return Promise.resolve();
+    if (!this.db) {
+      throw new Error(
+        "Database not initialized. Call initializeDatabase() first.",
+      );
+    }
+
+    const insertSession = this.db.prepare(`
+      INSERT OR IGNORE INTO execution_sessions (session_id)
+      VALUES (?)
+    `);
+
+    const insertStep = this.db.prepare(`
+      INSERT OR REPLACE INTO step_logs (
+        session_id,
+        step_index,
+        timestamp,
+        tool_name,
+        args,
+        stdout_summary,
+        token_count_estimate
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    // Wrap in an ACID-compliant transaction to assert execution safety
+    const transaction = this.db.transaction(() => {
+      insertSession.run(sessionId);
+      insertStep.run(
+        sessionId,
+        stepIndex,
+        payload.timestamp,
+        payload.toolName,
+        JSON.stringify(payload.args),
+        payload.stdoutSummary ?? null,
+        payload.tokenCountEstimate,
+      );
+    });
+
+    transaction();
   }
 
-  async getSessionHistory(_sessionId: string): Promise<StepRecord[]> {
-    // Defined as stub for future TASK implementation
-    return Promise.resolve([]);
+  async getSessionHistory(sessionId: string): Promise<StepRecord[]> {
+    if (!this.db) {
+      throw new Error(
+        "Database not initialized. Call initializeDatabase() first.",
+      );
+    }
+
+    const stmt = this.db.prepare(`
+      SELECT timestamp, tool_name, args, stdout_summary, token_count_estimate
+      FROM step_logs
+      WHERE session_id = ?
+      ORDER BY step_index ASC
+    `);
+
+    const rows = stmt.all(sessionId) as {
+      timestamp: string;
+      tool_name: string;
+      args: string;
+      stdout_summary: string | null;
+      token_count_estimate: number;
+    }[];
+
+    return rows.map((row) => {
+      const record: StepRecord = {
+        timestamp: row.timestamp,
+        toolName: row.tool_name,
+        args: JSON.parse(row.args),
+        tokenCountEstimate: row.token_count_estimate,
+      };
+
+      if (row.stdout_summary !== null) {
+        record.stdoutSummary = row.stdout_summary;
+      }
+
+      return record;
+    });
   }
 
   async logRateLimitCooldown(
-    _provider: string,
-    _resetEpochMs: number,
+    provider: string,
+    resetEpochMs: number,
   ): Promise<void> {
-    // Defined as stub for future TASK implementation
-    return Promise.resolve();
+    if (!this.db) {
+      throw new Error(
+        "Database not initialized. Call initializeDatabase() first.",
+      );
+    }
+
+    const stmt = this.db.prepare(`
+      INSERT OR REPLACE INTO provider_cooldowns (provider, reset_epoch_ms)
+      VALUES (?, ?)
+    `);
+
+    stmt.run(provider, resetEpochMs);
   }
 
-  async getRateLimitCooldown(_provider: string): Promise<number | null> {
-    // Defined as stub for future TASK implementation
-    return Promise.resolve(null);
+  async getRateLimitCooldown(provider: string): Promise<number | null> {
+    if (!this.db) {
+      throw new Error(
+        "Database not initialized. Call initializeDatabase() first.",
+      );
+    }
+
+    const stmt = this.db.prepare(`
+      SELECT reset_epoch_ms FROM provider_cooldowns WHERE provider = ?
+    `);
+
+    const row = stmt.get(provider) as { reset_epoch_ms: number } | undefined;
+    if (!row) {
+      return null;
+    }
+
+    return row.reset_epoch_ms;
   }
 }
