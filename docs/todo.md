@@ -19,3 +19,10 @@
 - Injection-Free Execution: By utilizing execFile, arguments are passed directly as an array (['rev-parse', '--is-inside-work-tree']) without spawning a shell interpreter. This structurally bypasses traditional command injection vulnerabilities.
 - Graceful Error Recovery: Instead of throwing high-level exceptions on system check failures (e.g., when directories do not exist or when Git commands exit with code 128), the validator safely returns false, ensuring that high-level callers can perform conditional environment validations seamlessly.
 - Node-Native Performance: No external heavy dependencies (like simple-git) were introduced, keeping the CLI footprint extremely lightweight and fast.
+
+### TASK 06
+
+#### Refactoring Recommendations:
+
+- Command Execution: The use of execFileSync rather than execSync avoids shell execution vulnerabilities and resolves differences in terminal behavior between Windows shells (PowerShell, Command Prompt) and Unix shells (sh, bash).
+- Git Status Guard: By checking git status --porcelain before executing git stash push, we avoid unnecessary or empty stash entries while ensuring that repositories with untracked files are correctly and fully cleaned with the -u flag.

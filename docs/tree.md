@@ -10,7 +10,9 @@ nexus
 │   │   └── ConfigManager.ts
 │   ├── git
 │   │   ├── GitValidator.test.ts
-│   │   └── GitValidator.ts
+│   │   ├── GitValidator.ts
+│   │   ├── SandboxBranchManager.test.ts
+│   │   └── SandboxBranchManager.ts
 │   └── storage
 │       ├── SQLiteStorageManager.test.ts
 │       └── SQLiteStorageManager.ts
