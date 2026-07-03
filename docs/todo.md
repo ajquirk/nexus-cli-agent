@@ -26,3 +26,72 @@
 
 - Command Execution: The use of execFileSync rather than execSync avoids shell execution vulnerabilities and resolves differences in terminal behavior between Windows shells (PowerShell, Command Prompt) and Unix shells (sh, bash).
 - Git Status Guard: By checking git status --porcelain before executing git stash push, we avoid unnecessary or empty stash entries while ensuring that repositories with untracked files are correctly and fully cleaned with the -u flag.
+
+### TASK 07
+
+#### Refactoring & Stability Recommendations:
+
+Three stability recommendations can make this module even more robust when running in production:
+
+---
+
+##### 1. Transient Git Lock Retries (Lock File Contention)
+
+**The Problem:**
+In modern development environments, background tasks (VS Code Git integrations, automatic linters, or file watchers) can trigger concurrent Git processes. This occasionally results in transient lock errors like:
+`fatal: Unable to create '.git/index.lock': File exists.`
+
+**The Recommendation:**
+Introduce a lightweight retry wrapper for command execution. If a `runGit` command fails with a lock file error, we can catch it, wait 100–200 milliseconds, and retry up to 3 times before finally giving up. This prevents transient crashes in the middle of an autonomous agent loop.
+
+```typescript
+// Example Implementation Fragment:
+private async runGitWithRetry(args: string[], retries = 3): Promise<string> {
+  try {
+    return this.runGit(args);
+  } catch (error: any) {
+    const isLockError = error.message?.includes("index.lock") || error.message?.includes(".lock");
+    if (isLockError && retries > 0) {
+      await new Promise(resolve => setTimeout(resolve, 150));
+      return this.runGitWithRetry(args, retries - 1);
+    }
+    throw error;
+  }
+}
+```
+
+---
+
+##### 2. Guard Against Missing Git Identity in CI/Isolated Shells
+
+**The Problem:**
+If the tool is executed inside an isolated Docker container, a bare-metal CI runner, or a freshly initialized environment without global Git configuration, any attempt by the agent to make a commit on the sandbox branch will fail with:
+`*** Please tell me who you are.`
+
+**The Recommendation:**
+Before applying changes, the manager can verify if a Git identity is configured. If not, it can temporarily set a repository-local user configuration (`user.name` and `user.email`) restricted strictly to the current workspace, allowing the execution loop to proceed smoothly.
+
+```typescript
+// Example Implementation Fragment:
+private ensureGitIdentity(): void {
+  try {
+    this.runGit(["config", "--get", "user.name"]);
+  } catch {
+    // If name is missing, configure local fallbacks for this repository only
+    this.runGit(["config", "local", "user.name", "Nexus CLI Agent"]);
+    this.runGit(["config", "local", "user.email", "agent@nexus.local"]);
+  }
+}
+```
+
+---
+
+##### 3. Handle Detached HEAD States
+
+**The Problem:**
+If a developer checks out a specific commit hash (detached HEAD state) rather than a branch, and then runs the agent, `findOriginalBranch` will fallback to `"main"`. When restoring, the developer will be switched back to `main` instead of the original commit they were looking at, altering their workspace state.
+
+**The Recommendation:**
+If `git branch --show-current` returns an empty string (signifying a detached HEAD) before the sandbox branch is created, we can record the exact commit SHA (via `git rev-parse HEAD`) as the target to return to, rather than assuming a named branch.
+
+---
