@@ -111,3 +111,12 @@ If `git branch --show-current` returns an empty string (signifying a detached HE
 
 - Default Backoff Multipliers: If no retry-after header is supplied in consecutive rate limits, consider using an exponential backoff factor (e.g., doubling the default 2000ms backoff with each failure count: 2000 \* Math.pow(2, attempts)). This would prevent hitting severe outer security layers when encountering highly strict APIs.
 - Provider Auto-Detection: If providerName is omitted in the constructor options, we could infer it from the model.provider string (provided by most Vercel AI SDK language models) to automate database namespace organization.
+
+---
+
+### TASK 13
+
+#### Refactoring Recommendations
+
+- Parallel Summarization: Using Promise.all allows both clusters of older steps to be summarized concurrently when communicating with the upstream model provider. This avoids sequential network request overhead.
+- Copy on Return: By returning copies of the raw steps (slice & array destructuring), we guarantee that modifications made to the returned array in memory do not mutate the history cache out-of-band, preserving strict functional isolation.
