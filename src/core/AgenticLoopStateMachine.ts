@@ -59,167 +59,234 @@ export class AgenticLoopStateMachine {
       "Initializing sandbox branch for task execution...",
     );
 
+    let isInterrupted = false;
+    let sigintHandler: (() => void) | null = null;
+    let stepIndex = 0;
+
     try {
       // 3. Apply isolated sandbox branch
       await this.sandboxExecutor.applySandboxBranch(sessionId);
       this.terminalInterface?.stopSpinner(true, "Sandbox branch initialized.");
 
-      let stepIndex = 0;
+      // Set up process interrupt promise wrapper
+      let rejectInterrupt: (reason: any) => void;
+      const interruptPromise = new Promise<void>((_, reject) => {
+        rejectInterrupt = reject;
+      });
 
-      // Define safe standard tools exposed to the LLM agentic workflow
-      const availableTools: ToolSpec[] = [
-        {
-          name: "apply_patch",
-          description:
-            "Apply a targeted search-and-replace block to change files.",
-          parameters: {
-            type: "object",
-            properties: {
-              filePath: { type: "string" },
-              find: { type: "string" },
-              replace: { type: "string" },
-            },
-            required: ["filePath", "find", "replace"],
-          },
-        },
-        {
-          name: "execute_command",
-          description:
-            "Execute a safe parameterized system execution template.",
-          parameters: {
-            type: "object",
-            properties: {
-              commandKey: { type: "string" },
-              argumentTarget: { type: "string" },
-            },
-            required: ["commandKey", "argumentTarget"],
-          },
-        },
-      ];
+      // Construct a closure-scoped SIGINT handler to prevent leakage and correctly log step state
+      sigintHandler = async () => {
+        if (isInterrupted) return;
+        isInterrupted = true;
 
-      // 4. Autonomous Agentic Loop
-      while (true) {
-        // Retrieve logged step history for contextual awareness
-        const history = await this.storageManager.getSessionHistory(sessionId);
+        try {
+          this.terminalInterface?.stopSpinner(false, "Interrupted by user.");
 
-        // Enforce hard step limits to protect host environments (REQ-02)
-        if (stepIndex >= this.stepLimit) {
-          throw new Error(
-            `Step Limit limit of ${this.stepLimit} reached. Terminating loop to prevent runaway behavior`,
-          );
-        }
-
-        this.terminalInterface?.showSpinner(
-          `Evaluating intent & deciding next action (Step ${stepIndex + 1}/${this.stepLimit})...`,
-        );
-
-        // Generate the next decision sequence
-        const decision = await this.orchestrator.generateNextTurn(
-          sessionId,
-          history,
-          availableTools,
-        );
-
-        this.terminalInterface?.stopSpinner(true);
-
-        // Handle terminal transition types: complete
-        if (decision.type === "complete") {
-          const completeRecord: StepRecord = {
+          // Record the interrupt event cleanly in the SQLite WAL history log
+          const interruptRecord: StepRecord = {
             timestamp: new Date().toISOString(),
-            toolName: "complete",
-            args: { message: decision.message ?? "" },
-            stdoutSummary: decision.message,
-            tokenCountEstimate: 50,
+            toolName: "sigint_interrupt",
+            args: { message: "Process received SIGINT" },
+            stdoutSummary: "Execution interrupted by user (SIGINT).",
+            tokenCountEstimate: 0,
           };
+
           await this.storageManager.saveStep(
             sessionId,
             stepIndex,
-            completeRecord,
+            interruptRecord,
           );
 
-          this.terminalInterface?.showSpinner(
-            "Merging validated sandbox branch edits...",
-          );
-          await this.sandboxExecutor.mergeSandboxBranch();
-          this.terminalInterface?.stopSpinner(
-            true,
-            "Sandbox branch merged successfully.",
-          );
-          break;
-        }
+          // Ask the developer if they wish to retain or discard the sandbox environment
+          const retain = this.terminalInterface
+            ? await this.terminalInterface.requestUserApproval(
+                "Do you want to retain the sandbox branch?",
+              )
+            : false;
 
-        // Handle terminal transition types: fail
-        if (decision.type === "fail") {
-          throw new Error(
-            `Agent execution failed: ${decision.message || "Unknown model refusal"}`,
-          );
-        }
-
-        // Handle execution turn types: tool_call
-        if (decision.type === "tool_call" && decision.toolCall) {
-          const tool = decision.toolCall;
-          this.terminalInterface?.showSpinner(
-            `Executing step action: ${tool.name}...`,
-          );
-
-          let stdoutSummary = "";
-
-          if (tool.name === "apply_patch") {
-            const patchArgs = tool.args as {
-              filePath: string;
-              find: string;
-              replace: string;
-            };
-            const block: SearchReplaceBlock = {
-              filePath: patchArgs.filePath,
-              find: patchArgs.find,
-              replace: patchArgs.replace,
-            };
-            await this.sandboxExecutor.applyCodePatch(
-              patchArgs.filePath,
-              block,
-            );
-            stdoutSummary = `Successfully applied code patch to ${patchArgs.filePath}`;
-          } else if (tool.name === "execute_command") {
-            const cmdArgs = tool.args as {
-              commandKey: string;
-              argumentTarget: string;
-            };
-            const cmd: ParameterizedSafeCommand = {
-              commandKey: cmdArgs.commandKey,
-              argumentTarget: cmdArgs.argumentTarget,
-            };
-            stdoutSummary = await this.sandboxExecutor.executeCommand(cmd);
-          } else {
-            throw new Error(`Unsupported tool action received: ${tool.name}`);
+          if (!retain) {
+            await this.sandboxExecutor.restoreOriginalBranch();
           }
 
-          // Persist the executed action and output result to SQLite WAL log (REQ-01)
-          const stepRecord: StepRecord = {
-            timestamp: new Date().toISOString(),
-            toolName: tool.name,
-            args: tool.args,
-            stdoutSummary,
-            tokenCountEstimate: Math.max(
-              20,
-              Math.ceil(stdoutSummary.length / 4),
-            ),
-          };
-
-          await this.storageManager.saveStep(sessionId, stepIndex, stepRecord);
-          this.terminalInterface?.stopSpinner(
-            true,
-            `Action ${tool.name} finished successfully.`,
-          );
-
-          stepIndex++;
-        } else {
-          throw new Error(
-            "Invalid or unsupported decision received from orchestrator.",
-          );
+          rejectInterrupt(new Error("Execution interrupted by user (SIGINT)"));
+        } catch (err) {
+          rejectInterrupt(err);
         }
-      }
+      };
+
+      // Register listener to the current Node process
+      process.on("SIGINT", sigintHandler);
+
+      // Core Agentic loop sequence
+      const loopPromise = (async () => {
+        // Define safe standard tools exposed to the LLM agentic workflow
+        const availableTools: ToolSpec[] = [
+          {
+            name: "apply_patch",
+            description:
+              "Apply a targeted search-and-replace block to change files.",
+            parameters: {
+              type: "object",
+              properties: {
+                filePath: { type: "string" },
+                find: { type: "string" },
+                replace: { type: "string" },
+              },
+              required: ["filePath", "find", "replace"],
+            },
+          },
+          {
+            name: "execute_command",
+            description:
+              "Execute a safe parameterized system execution template.",
+            parameters: {
+              type: "object",
+              properties: {
+                commandKey: { type: "string" },
+                argumentTarget: { type: "string" },
+              },
+              required: ["commandKey", "argumentTarget"],
+            },
+          },
+        ];
+
+        // 4. Autonomous Agentic Loop
+        while (true) {
+          // Retrieve logged step history for contextual awareness
+          const history =
+            await this.storageManager.getSessionHistory(sessionId);
+
+          // Enforce hard step limits to protect host environments (REQ-02)
+          if (stepIndex >= this.stepLimit) {
+            throw new Error(
+              `Step Limit limit of ${this.stepLimit} reached. Terminating loop to prevent runaway behavior`,
+            );
+          }
+
+          this.terminalInterface?.showSpinner(
+            `Evaluating intent & deciding next action (Step ${stepIndex + 1}/${this.stepLimit})...`,
+          );
+
+          // Generate the next decision sequence
+          const decision = await this.orchestrator.generateNextTurn(
+            sessionId,
+            history,
+            availableTools,
+          );
+
+          this.terminalInterface?.stopSpinner(true);
+
+          // Handle terminal transition types: complete
+          if (decision.type === "complete") {
+            const completeRecord: StepRecord = {
+              timestamp: new Date().toISOString(),
+              toolName: "complete",
+              args: { message: decision.message ?? "" },
+              stdoutSummary: decision.message,
+              tokenCountEstimate: 50,
+            };
+            await this.storageManager.saveStep(
+              sessionId,
+              stepIndex,
+              completeRecord,
+            );
+
+            this.terminalInterface?.showSpinner(
+              "Merging validated sandbox branch edits...",
+            );
+            await this.sandboxExecutor.mergeSandboxBranch();
+            this.terminalInterface?.stopSpinner(
+              true,
+              "Sandbox branch merged successfully.",
+            );
+            break;
+          }
+
+          // Handle terminal transition types: fail
+          if (decision.type === "fail") {
+            throw new Error(
+              `Agent execution failed: ${decision.message || "Unknown model refusal"}`,
+            );
+          }
+
+          // Handle execution turn types: tool_call
+          if (decision.type === "tool_call" && decision.toolCall) {
+            const tool = decision.toolCall;
+            this.terminalInterface?.showSpinner(
+              `Executing step action: ${tool.name}...`,
+            );
+
+            let stdoutSummary = "";
+
+            if (tool.name === "apply_patch") {
+              const patchArgs = tool.args as {
+                filePath: string;
+                find: string;
+                replace: string;
+              };
+              const block: SearchReplaceBlock = {
+                filePath: patchArgs.filePath,
+                find: patchArgs.find,
+                replace: patchArgs.replace,
+              };
+              await this.sandboxExecutor.applyCodePatch(
+                patchArgs.filePath,
+                block,
+              );
+              stdoutSummary = `Successfully applied code patch to ${patchArgs.filePath}`;
+            } else if (tool.name === "execute_command") {
+              const cmdArgs = tool.args as {
+                commandKey: string;
+                argumentTarget: string;
+              };
+              const cmd: ParameterizedSafeCommand = {
+                commandKey: cmdArgs.commandKey,
+                argumentTarget: cmdArgs.argumentTarget,
+              };
+              stdoutSummary = await this.sandboxExecutor.executeCommand(cmd);
+            } else {
+              throw new Error(`Unsupported tool action received: ${tool.name}`);
+            }
+
+            // Persist the executed action and output result to SQLite WAL log (REQ-01)
+            const stepRecord: StepRecord = {
+              timestamp: new Date().toISOString(),
+              toolName: tool.name,
+              args: tool.args,
+              stdoutSummary,
+              tokenCountEstimate: Math.max(
+                20,
+                Math.ceil(stdoutSummary.length / 4),
+              ),
+            };
+
+            await this.storageManager.saveStep(
+              sessionId,
+              stepIndex,
+              stepRecord,
+            );
+            this.terminalInterface?.stopSpinner(
+              true,
+              `Action ${tool.name} finished successfully.`,
+            );
+
+            stepIndex++;
+          } else {
+            throw new Error(
+              "Invalid or unsupported decision received from orchestrator.",
+            );
+          }
+        }
+      })();
+
+      // Race active loop execution against potential system interrupts
+      await Promise.race([loopPromise, interruptPromise]);
     } catch (err: any) {
+      // If the loop was interrupted by a SIGINT signal, skip double cleanup procedures
+      if (isInterrupted) {
+        throw err;
+      }
+
       this.terminalInterface?.stopSpinner(
         false,
         "Error occurred during execution.",
@@ -232,6 +299,11 @@ export class AgenticLoopStateMachine {
         this.terminalInterface.displayTerminalError(err.message || String(err));
       }
       throw err;
+    } finally {
+      // Clean up signal registration to guarantee no event listener leaks
+      if (sigintHandler) {
+        process.off("SIGINT", sigintHandler);
+      }
     }
   }
 }

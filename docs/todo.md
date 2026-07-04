@@ -120,3 +120,12 @@ If `git branch --show-current` returns an empty string (signifying a detached HE
 
 - Parallel Summarization: Using Promise.all allows both clusters of older steps to be summarized concurrently when communicating with the upstream model provider. This avoids sequential network request overhead.
 - Copy on Return: By returning copies of the raw steps (slice & array destructuring), we guarantee that modifications made to the returned array in memory do not mutate the history cache out-of-band, preserving strict functional isolation.
+
+---
+
+### TASK 18
+
+#### Refactoring Recommendations
+
+- Shared State Management: If the codebase continues to grow, we can encapsulate loop details (such as stepIndex and sessionId) inside an AgenticSessionContext structure. This would keep method signatures clean and reduce closure dependencies.
+- Process Signals abstraction: If other signals need to be handled similarly in the future (e.g. SIGTERM), we can move this listener pattern to an isolated ProcessSignalManager helper to keep the state machine class purely focused on agent execution flow.

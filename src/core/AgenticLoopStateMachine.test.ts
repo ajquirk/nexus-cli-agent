@@ -1,5 +1,5 @@
 // src/core/AgenticLoopStateMachine.test.ts
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   AgenticLoopStateMachine,
   SandboxExecutor,
@@ -256,5 +256,137 @@ describe("AgenticLoopStateMachine", () => {
     // Verify workspace was cleaned up on runaway error
     expect(mockSandboxExecutor.restoreOriginalBranch).toHaveBeenCalled();
     expect(mockSandboxExecutor.mergeSandboxBranch).not.toHaveBeenCalled();
+  });
+
+  // --- TASK-18 Interrupt Handling & Cleanup Tests ---
+  describe("Process Interrupt Handling & Cleanup (TASK-18)", () => {
+    let initialListenerCount: number;
+
+    beforeEach(() => {
+      initialListenerCount = process.listenerCount("SIGINT");
+    });
+
+    afterEach(() => {
+      // Ensure that we do not leak any registered SIGINT listeners to the test runner environment
+      expect(process.listenerCount("SIGINT")).toBe(initialListenerCount);
+      vi.restoreAllMocks();
+    });
+
+    it("should capture SIGINT, save interrupt log, ask user, restore branch when user declines retention, and reject", async () => {
+      // Mock user selection to return false (discard sandbox branch modifications)
+      vi.mocked(mockTerminalInterface.requestUserApproval).mockResolvedValue(
+        false,
+      );
+
+      let triggerSigint: () => void = () => {};
+      const longRunningPromise = new Promise<AgenticDecision>((resolve) => {
+        triggerSigint = () => {
+          process.emit("SIGINT");
+        };
+      });
+
+      vi.mocked(mockOrchestrator.generateNextTurn).mockReturnValue(
+        longRunningPromise,
+      );
+
+      const stateMachine = new AgenticLoopStateMachine({
+        storageManager: mockStorageManager,
+        orchestrator: mockOrchestrator,
+        sandboxExecutor: mockSandboxExecutor,
+        terminalInterface: mockTerminalInterface,
+      });
+
+      const startPromise = stateMachine.start("Interrupt task demonstration");
+
+      // Give control back to event loop so AgenticLoop registers the SIGINT listener
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      triggerSigint();
+
+      await expect(startPromise).rejects.toThrow(
+        "Execution interrupted by user (SIGINT)",
+      );
+
+      // Assert that execution step log is saved cleanly to SQLite write-ahead log
+      expect(mockStorageManager.saveStep).toHaveBeenCalled();
+      const saveCalls = vi.mocked(mockStorageManager.saveStep).mock.calls;
+      expect(saveCalls.length).toBeGreaterThanOrEqual(1);
+
+      const savedRecord = saveCalls[0][2] as StepRecord;
+      expect(savedRecord.toolName).toBe("sigint_interrupt");
+      expect(savedRecord.stdoutSummary).toContain("SIGINT");
+
+      // Assert that interactive terminal prompt was issued
+      expect(mockTerminalInterface.requestUserApproval).toHaveBeenCalledWith(
+        expect.stringContaining("Do you want to retain the sandbox branch"),
+      );
+
+      // Verify that workspace branch recovery is triggered
+      expect(mockSandboxExecutor.restoreOriginalBranch).toHaveBeenCalled();
+    });
+
+    it("should capture SIGINT, save log, ask user, and NOT restore branch when user accepts retention, and reject", async () => {
+      // Mock user selection to return true (retain experimental sandbox branch changes)
+      vi.mocked(mockTerminalInterface.requestUserApproval).mockResolvedValue(
+        true,
+      );
+
+      let triggerSigint: () => void = () => {};
+      const longRunningPromise = new Promise<AgenticDecision>((resolve) => {
+        triggerSigint = () => {
+          process.emit("SIGINT");
+        };
+      });
+
+      vi.mocked(mockOrchestrator.generateNextTurn).mockReturnValue(
+        longRunningPromise,
+      );
+
+      const stateMachine = new AgenticLoopStateMachine({
+        storageManager: mockStorageManager,
+        orchestrator: mockOrchestrator,
+        sandboxExecutor: mockSandboxExecutor,
+        terminalInterface: mockTerminalInterface,
+      });
+
+      const startPromise = stateMachine.start(
+        "Interrupt task retention demonstration",
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      triggerSigint();
+
+      await expect(startPromise).rejects.toThrow(
+        "Execution interrupted by user (SIGINT)",
+      );
+
+      expect(mockStorageManager.saveStep).toHaveBeenCalled();
+      expect(mockTerminalInterface.requestUserApproval).toHaveBeenCalled();
+
+      // Since developer elected to retain sandbox branch, skip restore cleanup
+      expect(mockSandboxExecutor.restoreOriginalBranch).not.toHaveBeenCalled();
+    });
+
+    it("should cleanly remove SIGINT listener upon normal completion of the loop", async () => {
+      vi.mocked(mockOrchestrator.generateNextTurn).mockResolvedValue({
+        type: "complete",
+        message: "Execution resolved successfully.",
+      });
+
+      const stateMachine = new AgenticLoopStateMachine({
+        storageManager: mockStorageManager,
+        orchestrator: mockOrchestrator,
+        sandboxExecutor: mockSandboxExecutor,
+        terminalInterface: mockTerminalInterface,
+      });
+
+      await stateMachine.start("Normal resolve demonstration");
+
+      expect(mockStorageManager.saveStep).toHaveBeenCalled();
+      expect(
+        vi.mocked(mockStorageManager.saveStep).mock.calls[0][2].toolName,
+      ).toBe("complete");
+      expect(mockSandboxExecutor.restoreOriginalBranch).not.toHaveBeenCalled();
+      // Lifecycle listener cleanup is evaluated and asserted inside afterEach
+    });
   });
 });
