@@ -18,6 +18,9 @@ nexus
 │   │   ├── GitValidator.ts
 │   │   ├── SandboxBranchManager.test.ts
 │   │   └── SandboxBranchManager.ts
+│   ├── patch
+│   │   ├── PatchExecutor.test.ts
+│   │   └── PatchExecutor.ts
 │   └── storage
 │       ├── SQLiteStorageManager.test.ts
 │       └── SQLiteStorageManager.ts
