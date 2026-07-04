@@ -95,3 +95,10 @@ If a developer checks out a specific commit hash (detached HEAD state) rather th
 If `git branch --show-current` returns an empty string (signifying a detached HEAD) before the sandbox branch is created, we can record the exact commit SHA (via `git rev-parse HEAD`) as the target to return to, rather than assuming a named branch.
 
 ---
+
+### TASK 11
+
+#### Refactoring Recommendations
+
+- Model Parameters: In the future (e.g., in TASK-12 or TASK-13), we can support passing extra sampling settings such as temperature or maxTokens during initialization via LLMOrchestratorOptions.
+- System Prompt Formatting: As the system architecture matures, we can dynamically compile systemInstruction using environment information (such as active OS, repository metadata, or absolute file paths) to ensure maximum local alignment.

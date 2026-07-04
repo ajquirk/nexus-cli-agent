@@ -18,6 +18,9 @@ nexus
 │   │   ├── GitValidator.ts
 │   │   ├── SandboxBranchManager.test.ts
 │   │   └── SandboxBranchManager.ts
+│   ├── llm
+│   │   ├── LLMOrchestrator.test.ts
+│   │   └── LLMOrchestrator.ts
 │   ├── patch
 │   │   ├── PatchExecutor.test.ts
 │   │   └── PatchExecutor.ts
