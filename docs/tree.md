@@ -8,6 +8,9 @@ nexus
 │   ├── config
 │   │   ├── ConfigManager.test.ts
 │   │   └── ConfigManager.ts
+│   ├── core
+│   │   ├── AgenticLoopStateMachine.test.ts
+│   │   └── AgenticLoopStateMachine.ts
 │   ├── execution
 │   │   ├── SafeCommandExecutor.test.ts
 │   │   ├── SafeCommandExecutor.ts
