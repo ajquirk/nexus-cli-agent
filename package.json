@@ -20,6 +20,7 @@
     "vitest": "^4.1.9"
   },
   "dependencies": {
+    "@clack/prompts": "^1.7.0",
     "ai": "^7.0.15",
     "better-sqlite3": "^12.11.1"
   }

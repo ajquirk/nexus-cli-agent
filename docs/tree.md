@@ -24,7 +24,10 @@ nexus
 │   ├── patch
 │   │   ├── PatchExecutor.test.ts
 │   │   └── PatchExecutor.ts
-│   └── storage
-│       ├── SQLiteStorageManager.test.ts
-│       └── SQLiteStorageManager.ts
+│   ├── storage
+│   │   ├── SQLiteStorageManager.test.ts
+│   │   └── SQLiteStorageManager.ts
+│   └── terminal
+│       ├── TerminalInterface.test.ts
+│       └── TerminalInterface.ts
 └── tsconfig.json
