@@ -25,6 +25,11 @@ export interface ClackTerminalInterfaceOptions {
    * Defaults to writing to process.stdout.
    */
   stdout?: { write(str: string): boolean };
+  /**
+   * Custom standard input reader to isolate testing side-effects.
+   * Defaults to reading from process.stdin.
+   */
+  stdin?: NodeJS.ReadableStream;
 }
 
 /**
@@ -33,12 +38,14 @@ export interface ClackTerminalInterfaceOptions {
  */
 export class ClackTerminalInterface implements TerminalInterface {
   private stdoutWriter: { write(str: string): boolean };
+  private stdinReader: NodeJS.ReadableStream;
   private activeSpinner: any = null;
 
   constructor(options?: ClackTerminalInterfaceOptions) {
     this.stdoutWriter = options?.stdout || {
       write: (str: string) => process.stdout.write(str),
     };
+    this.stdinReader = options?.stdin || process.stdin;
   }
 
   /**
@@ -46,7 +53,6 @@ export class ClackTerminalInterface implements TerminalInterface {
    */
   showSpinner(message: string): void {
     if (this.activeSpinner) {
-      // Gracefully stop any existing spinner before starting a new one
       this.activeSpinner.stop("Interrupted", 1);
     }
     this.activeSpinner = spinner();
@@ -65,10 +71,46 @@ export class ClackTerminalInterface implements TerminalInterface {
   }
 
   /**
-   * Request user interactive approval. (Out of scope for visual tasks - stubbed).
+   * Request user interactive approval.
    */
   async requestUserApproval(promptMessage: string): Promise<boolean> {
-    return true;
+    return new Promise<boolean>((resolve) => {
+      // Print the prompt with elegant styled formatting
+      this.stdoutWriter.write(
+        `\x1b[36m? \x1b[1m${promptMessage}\x1b[0m \x1b[90m(y/N) › \x1b[0m`,
+      );
+
+      const stdin = this.stdinReader;
+
+      if (typeof (stdin as any).resume === "function") {
+        (stdin as any).resume();
+      }
+      if (typeof (stdin as any).setEncoding === "function") {
+        (stdin as any).setEncoding("utf8");
+      }
+
+      const onData = (chunk: Buffer | string) => {
+        const input = chunk.toString().trim().toLowerCase();
+        cleanup();
+        if (input === "y" || input === "yes") {
+          resolve(true);
+        } else {
+          resolve(false);
+        }
+      };
+
+      const cleanup = () => {
+        stdin.removeListener("data", onData);
+        if (
+          typeof (stdin as any).pause === "function" &&
+          stdin === process.stdin
+        ) {
+          (stdin as any).pause();
+        }
+      };
+
+      stdin.on("data", onData);
+    });
   }
 
   /**
@@ -77,14 +119,20 @@ export class ClackTerminalInterface implements TerminalInterface {
   renderDiffView(diffText: string): void {
     const lines = diffText.split("\n");
     for (const line of lines) {
-      if (line.startsWith("+")) {
+      if (line.startsWith("---") || line.startsWith("+++")) {
+        // Distinct grey styling for standard git metadata headers
+        this.stdoutWriter.write(`\x1b[90m${line}\x1b[0m\n`);
+      } else if (line.startsWith("+")) {
         // Green color for added lines
         this.stdoutWriter.write(`\x1b[32m${line}\x1b[0m\n`);
       } else if (line.startsWith("-")) {
         // Red color for removed lines
         this.stdoutWriter.write(`\x1b[31m${line}\x1b[0m\n`);
+      } else if (line.startsWith("@@")) {
+        // Cyan color for hunk headers
+        this.stdoutWriter.write(`\x1b[36m${line}\x1b[0m\n`);
       } else {
-        // Grey color for context lines
+        // Grey color for unchanged context lines
         this.stdoutWriter.write(`\x1b[90m${line}\x1b[0m\n`);
       }
     }
