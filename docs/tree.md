@@ -5,6 +5,8 @@ nexus
 ├── package.json
 ├── prompts
 ├── src
+│   ├── cli.test.ts
+│   ├── cli.ts
 │   ├── config
 │   │   ├── ConfigManager.test.ts
 │   │   └── ConfigManager.ts

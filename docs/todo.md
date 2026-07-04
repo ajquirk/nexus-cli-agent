@@ -129,3 +129,12 @@ If `git branch --show-current` returns an empty string (signifying a detached HE
 
 - Shared State Management: If the codebase continues to grow, we can encapsulate loop details (such as stepIndex and sessionId) inside an AgenticSessionContext structure. This would keep method signatures clean and reduce closure dependencies.
 - Process Signals abstraction: If other signals need to be handled similarly in the future (e.g. SIGTERM), we can move this listener pattern to an isolated ProcessSignalManager helper to keep the state machine class purely focused on agent execution flow.
+
+---
+
+### TASK 19
+
+#### Refactoring Recommendations (Clean Code Verification)
+
+- Graceful Shell Integration: For production usage, we recommend placing a lightweight wrapper script in a binary entry point (e.g., bin/nexus.js or src/index.ts) that calls runCLI().catch(...) and exits the process with code 1 upon uncaught errors, keeping the core testable runCLI free of rigid process.exit() calls that would disrupt test runners.
+- Unified Step Limit Propagation: The CLI config parses agent.config.json limits during bootstrap. In a future task, we could load the parsed stepLimit from the local ConfigManager workspace configuration and pass it automatically into options.stepLimit inside the runCLI execution branch to seamlessly link user preferences to the active loop boundaries.
