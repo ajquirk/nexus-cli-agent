@@ -1,4 +1,5 @@
 import { generateText, jsonSchema, LanguageModel } from "ai";
+import { SQLiteStorageManager } from "../storage/SQLiteStorageManager.js";
 
 export interface StepRecord {
   timestamp: string;
@@ -35,108 +36,182 @@ export interface LLMOrchestrator {
 export interface LLMOrchestratorOptions {
   model: LanguageModel;
   systemInstruction?: string;
+  providerName?: string;
+  storageManager?: SQLiteStorageManager;
+  sleepFn?: (ms: number) => Promise<void>;
+  maxRetries?: number;
 }
 
 export class VercelLLMOrchestrator implements LLMOrchestrator {
   private model: LanguageModel;
   private systemInstruction: string;
+  private providerName: string;
+  private storageManager?: SQLiteStorageManager;
+  private sleepFn: (ms: number) => Promise<void>;
+  private maxRetries: number;
 
   constructor(options: LLMOrchestratorOptions) {
     this.model = options.model;
     this.systemInstruction =
       options.systemInstruction || "You are a helpful assistant.";
+    this.providerName = options.providerName || "default-provider";
+    this.storageManager = options.storageManager;
+    this.sleepFn =
+      options.sleepFn ||
+      ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.maxRetries = options.maxRetries !== undefined ? options.maxRetries : 2;
   }
 
   /**
    * Transforms internal step history into the unified Vercel AI SDK chat schema,
    * configures tool mappings, and returns the next agentic decision.
+   * Integrates proactive cooldown checking and exponential retry handling.
    */
   async generateNextTurn(
     sessionId: string,
     currentHistory: StepRecord[],
     availableTools: ToolSpec[],
   ): Promise<AgenticDecision> {
-    try {
-      // 1. Map currentHistory to Vercel AI SDK CoreMessages (retains args/result inside message parts)
-      const messages: any[] = [];
-      for (let i = 0; i < currentHistory.length; i++) {
-        const step = currentHistory[i];
-        const toolCallId = `call_${sessionId}_${i}`;
+    // 1. Map currentHistory to Vercel AI SDK CoreMessages
+    const messages: any[] = [];
+    for (let i = 0; i < currentHistory.length; i++) {
+      const step = currentHistory[i];
+      const toolCallId = `call_${sessionId}_${i}`;
 
-        // Map assistant decision to run the tool (args is correct here for ToolCallPart)
-        messages.push({
-          role: "assistant",
-          content: [
-            {
-              type: "tool-call",
-              toolCallId,
-              toolName: step.toolName,
-              args: step.args,
-            },
-          ],
-        });
-
-        // Map matching execution output of the tool (result is correct here for ToolResultPart)
-        messages.push({
-          role: "tool",
-          content: [
-            {
-              type: "tool-result",
-              toolCallId,
-              toolName: step.toolName,
-              result: step.stdoutSummary ?? "",
-            },
-          ],
-        });
-      }
-
-      // 2. Translate internal ToolSpec formats into the SDK's expected tool structure
-      const tools: Record<string, any> = {};
-      for (const spec of availableTools) {
-        tools[spec.name] = {
-          description: spec.description,
-          parameters: jsonSchema(spec.parameters),
-        };
-      }
-
-      // 3. Query the configured language model
-      const response = await generateText({
-        model: this.model,
-        system: this.systemInstruction,
-        messages,
-        tools,
+      messages.push({
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId,
+            toolName: step.toolName,
+            args: step.args,
+          },
+        ],
       });
 
-      // 4. Map output to structured AgenticDecision format (primaryCall uses .input in latest versions)
-      if (response.toolCalls && response.toolCalls.length > 0) {
-        const primaryCall = response.toolCalls[0];
-        return {
-          type: "tool_call",
-          toolCall: {
-            id: primaryCall.toolCallId,
-            name: primaryCall.toolName,
-            args: (primaryCall.input as Record<string, any>) || {},
+      messages.push({
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId,
+            toolName: step.toolName,
+            result: step.stdoutSummary ?? "",
           },
-        };
-      }
+        ],
+      });
+    }
 
-      if (response.text && response.text.trim().length > 0) {
+    // 2. Translate internal ToolSpec formats into the SDK's expected tool structure
+    const tools: Record<string, any> = {};
+    for (const spec of availableTools) {
+      tools[spec.name] = {
+        description: spec.description,
+        parameters: jsonSchema(spec.parameters),
+      };
+    }
+
+    let attempts = 0;
+
+    while (true) {
+      try {
+        // Evaluate pre-execution active cooldown windows
+        if (this.storageManager) {
+          const resetEpochMs = await this.storageManager.getRateLimitCooldown(
+            this.providerName,
+          );
+          if (resetEpochMs && resetEpochMs > Date.now()) {
+            const waitTime = resetEpochMs - Date.now();
+            if (waitTime > 0) {
+              await this.sleepFn(waitTime);
+            }
+          }
+        }
+
+        // 3. Query the configured language model
+        const response = await generateText({
+          model: this.model,
+          system: this.systemInstruction,
+          messages,
+          tools,
+        });
+
+        // 4. Map output to structured AgenticDecision format
+        if (response.toolCalls && response.toolCalls.length > 0) {
+          const primaryCall = response.toolCalls[0];
+          return {
+            type: "tool_call",
+            toolCall: {
+              id: primaryCall.toolCallId,
+              name: primaryCall.toolName,
+              args: (primaryCall.input as Record<string, any>) || {},
+            },
+          };
+        }
+
+        if (response.text && response.text.trim().length > 0) {
+          return {
+            type: "complete",
+            message: response.text,
+          };
+        }
+
         return {
-          type: "complete",
-          message: response.text,
+          type: "fail",
+          message:
+            "No content or tool execution instructions generated by the model.",
+        };
+      } catch (error: any) {
+        // Intercept standard HTTP 429 response codes or rate limit message content
+        const is429 =
+          error &&
+          (error.status === 429 ||
+            error.statusCode === 429 ||
+            (typeof error.message === "string" &&
+              (error.message.includes("429") ||
+                error.message.toLowerCase().includes("rate limit") ||
+                error.message.toLowerCase().includes("rate_limit"))));
+
+        if (is429 && attempts < this.maxRetries) {
+          attempts++;
+
+          // Parse retry-after header to establish targeted sleep delays (defaulting to 2 seconds)
+          let retryAfterSecs = 2;
+          const headerVal =
+            error.headers?.get?.("retry-after") ??
+            error.headers?.["retry-after"] ??
+            error.response?.headers?.get?.("retry-after") ??
+            error.response?.headers?.["retry-after"];
+
+          if (headerVal !== undefined && headerVal !== null) {
+            const parsed = parseInt(String(headerVal), 10);
+            if (!isNaN(parsed) && parsed >= 0) {
+              retryAfterSecs = parsed;
+            }
+          }
+
+          const retryAfterMs = retryAfterSecs * 1000;
+          const resetEpochMs = Date.now() + retryAfterMs;
+
+          // Record provider's sleep-state to WAL storage
+          if (this.storageManager) {
+            await this.storageManager.logRateLimitCooldown(
+              this.providerName,
+              resetEpochMs,
+            );
+          }
+
+          await this.sleepFn(retryAfterMs);
+          continue;
+        }
+
+        // Return a failing decision for unhandled exception routes or exhausted retry budgets
+        return {
+          type: "fail",
+          message: error?.message || "An unknown orchestration error occurred.",
         };
       }
-
-      return {
-        type: "fail",
-        message:
-          "No content or tool execution instructions generated by the model.",
-      };
-    } catch (error: any) {
-      return {
-        type: "fail",
-        message: error?.message || "An unknown orchestration error occurred.",
-      };
     }
   }
 }
