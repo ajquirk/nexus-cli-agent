@@ -8,6 +8,9 @@ nexus
 │   ├── config
 │   │   ├── ConfigManager.test.ts
 │   │   └── ConfigManager.ts
+│   ├── execution
+│   │   ├── SafeCommandValidator.test.ts
+│   │   └── SafeCommandValidator.ts
 │   ├── git
 │   │   ├── GitValidator.test.ts
 │   │   ├── GitValidator.ts
