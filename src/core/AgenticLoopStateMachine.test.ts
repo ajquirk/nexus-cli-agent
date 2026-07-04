@@ -150,7 +150,7 @@ describe("AgenticLoopStateMachine", () => {
 
     // We expect start to throw/reject because of the step limit breach
     await expect(stateMachine.start("Run local tests")).rejects.toThrow(
-      "Step limit exceeded",
+      "Step Limit limit of 1 reached. Terminating loop to prevent runaway behavior",
     );
 
     // The single execution step is run and saved, but second step triggers boundary failure
@@ -215,6 +215,45 @@ describe("AgenticLoopStateMachine", () => {
     );
 
     // Changes stashed/cleaned up
+    expect(mockSandboxExecutor.restoreOriginalBranch).toHaveBeenCalled();
+    expect(mockSandboxExecutor.mergeSandboxBranch).not.toHaveBeenCalled();
+  });
+
+  it("should stop execution at exactly step 3 and throw runaway error when stepLimit is 3", async () => {
+    // Set up a mocked LLM driver designed to continuously issue operations
+    vi.mocked(mockOrchestrator.generateNextTurn).mockResolvedValue({
+      type: "tool_call",
+      toolCall: {
+        id: "call-runaway",
+        name: "execute_command",
+        args: {
+          commandKey: "npm_test",
+          argumentTarget: "src/core",
+        },
+      },
+    });
+
+    const stateMachine = new AgenticLoopStateMachine({
+      storageManager: mockStorageManager,
+      orchestrator: mockOrchestrator,
+      sandboxExecutor: mockSandboxExecutor,
+      terminalInterface: mockTerminalInterface,
+      stepLimit: 3,
+    });
+
+    await expect(
+      stateMachine.start("Audit code base patterns"),
+    ).rejects.toThrowError(
+      "Step Limit limit of 3 reached. Terminating loop to prevent runaway behavior",
+    );
+
+    // Confirm that orchestrator generated exactly 3 turns
+    expect(mockOrchestrator.generateNextTurn).toHaveBeenCalledTimes(3);
+
+    // Assert that 3 tool records were logged into SQLite storage
+    expect(mockStorageManager.saveStep).toHaveBeenCalledTimes(3);
+
+    // Verify workspace was cleaned up on runaway error
     expect(mockSandboxExecutor.restoreOriginalBranch).toHaveBeenCalled();
     expect(mockSandboxExecutor.mergeSandboxBranch).not.toHaveBeenCalled();
   });

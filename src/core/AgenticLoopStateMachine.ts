@@ -105,7 +105,7 @@ export class AgenticLoopStateMachine {
         // Enforce hard step limits to protect host environments (REQ-02)
         if (stepIndex >= this.stepLimit) {
           throw new Error(
-            `Step limit exceeded: Maximum allowable steps is ${this.stepLimit}.`,
+            `Step Limit limit of ${this.stepLimit} reached. Terminating loop to prevent runaway behavior`,
           );
         }
 
