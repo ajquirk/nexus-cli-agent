@@ -1,3 +1,5 @@
+## PRD
+
 ### TASK 03
 
 #### Refactoring Recommendations:
@@ -146,3 +148,13 @@ To make the application fully interactive, we should:
 - Implement the default LanguageModel resolver (such as reading API keys from ~/.config/nexus/.env and using @ai-sdk/openai or similar).
 - Create a unified SandboxExecutorImpl class to resolve the Git, Patch, and command execution components into a single object.
 - Wire these defaults into src/cli.ts and set up the shebang binary script.
+
+---
+
+## PRD 2
+
+### TASK 02
+
+#### Refactoring Recommendations
+
+- Pre-Caching Config Payload: If getCommandTemplate is frequently queried, the configuration JSON file could be read once and cached in memory. However, since the PRD treats modifications as potentially dynamic (matching transactional sessions), reading the file fresh ensures we always pick up configuration modifications made on-disk, maintaining high session reliability. Given the CLI context, the disk access overhead is negligible.

@@ -190,3 +190,148 @@ describe("ConfigManager [TASK-01]", () => {
     });
   });
 });
+
+describe("ConfigManager [TASK-02] - getCommandTemplate", () => {
+  it("should successfully retrieve a command template when configured as a string array at the top level", async () => {
+    const mockReadFile = vi.fn().mockResolvedValue(
+      JSON.stringify({
+        test: ["npm", "run", "test", "--", "{target}"],
+      }),
+    );
+
+    const manager = new ConfigManager({
+      homeDir: "/home/user",
+      workspaceDir: "/workspace",
+      fsPromises: {
+        access: vi.fn(),
+        mkdir: vi.fn(),
+        writeFile: vi.fn(),
+        chmod: vi.fn(),
+        readFile: mockReadFile,
+      },
+    });
+
+    const result = await manager.getCommandTemplate("test");
+
+    expect(result).toEqual(["npm", "run", "test", "--", "{target}"]);
+    expect(mockReadFile).toHaveBeenCalledWith(
+      path.join("/workspace", "agent.config.json"),
+      expect.objectContaining({ encoding: "utf-8" }),
+    );
+  });
+
+  it("should retrieve a command template nested inside a 'commands' block for robustness", async () => {
+    const mockReadFile = vi.fn().mockResolvedValue(
+      JSON.stringify({
+        commands: {
+          test: ["npm", "run", "test", "--", "{target}"],
+        },
+      }),
+    );
+
+    const manager = new ConfigManager({
+      homeDir: "/home/user",
+      workspaceDir: "/workspace",
+      fsPromises: {
+        access: vi.fn(),
+        mkdir: vi.fn(),
+        writeFile: vi.fn(),
+        chmod: vi.fn(),
+        readFile: mockReadFile,
+      },
+    });
+
+    const result = await manager.getCommandTemplate("test");
+    expect(result).toEqual(["npm", "run", "test", "--", "{target}"]);
+  });
+
+  it("should throw an error if the configured template is a raw string instead of string array", async () => {
+    const mockReadFile = vi.fn().mockResolvedValue(
+      JSON.stringify({
+        test: "npm run test -- {target}",
+      }),
+    );
+
+    const manager = new ConfigManager({
+      homeDir: "/home/user",
+      workspaceDir: "/workspace",
+      fsPromises: {
+        access: vi.fn(),
+        mkdir: vi.fn(),
+        writeFile: vi.fn(),
+        chmod: vi.fn(),
+        readFile: mockReadFile,
+      },
+    });
+
+    await expect(manager.getCommandTemplate("test")).rejects.toThrow(
+      "Command template 'test' must be defined strictly as an array of strings to prevent shell-injection vulnerabilities.",
+    );
+  });
+
+  it("should throw an error if the array template contains non-string items", async () => {
+    const mockReadFile = vi.fn().mockResolvedValue(
+      JSON.stringify({
+        test: ["npm", "run", "test", 123],
+      }),
+    );
+
+    const manager = new ConfigManager({
+      homeDir: "/home/user",
+      workspaceDir: "/workspace",
+      fsPromises: {
+        access: vi.fn(),
+        mkdir: vi.fn(),
+        writeFile: vi.fn(),
+        chmod: vi.fn(),
+        readFile: mockReadFile,
+      },
+    });
+
+    await expect(manager.getCommandTemplate("test")).rejects.toThrow(
+      "Command template 'test' must be defined strictly as an array of strings to prevent shell-injection vulnerabilities.",
+    );
+  });
+
+  it("should throw an error if the requested template key is missing from the configuration file", async () => {
+    const mockReadFile = vi.fn().mockResolvedValue(
+      JSON.stringify({
+        otherKey: ["npm", "run", "build"],
+      }),
+    );
+
+    const manager = new ConfigManager({
+      homeDir: "/home/user",
+      workspaceDir: "/workspace",
+      fsPromises: {
+        access: vi.fn(),
+        mkdir: vi.fn(),
+        writeFile: vi.fn(),
+        chmod: vi.fn(),
+        readFile: mockReadFile,
+      },
+    });
+
+    await expect(manager.getCommandTemplate("test")).rejects.toThrow(
+      "Command template 'test' was not found in agent.config.json.",
+    );
+  });
+
+  it("should throw an error if the agent.config.json is invalid JSON", async () => {
+    const mockReadFile = vi.fn().mockResolvedValue("invalid json payload");
+
+    const manager = new ConfigManager({
+      homeDir: "/home/user",
+      workspaceDir: "/workspace",
+      fsPromises: {
+        access: vi.fn(),
+        mkdir: vi.fn(),
+        writeFile: vi.fn(),
+        chmod: vi.fn(),
+        readFile: mockReadFile,
+      },
+    });
+
+    await expect(manager.getCommandTemplate("test")).rejects.toThrow();
+  });
+});

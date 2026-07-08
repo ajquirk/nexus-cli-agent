@@ -26,6 +26,13 @@ export interface ConfigManagerOptions {
       options?: any,
     ): Promise<void>;
     chmod(path: string, mode: number | string): Promise<void>;
+    /**
+     * Optional read file injector to support isolated workspace reading
+     */
+    readFile?(
+      path: string,
+      options?: { encoding?: BufferEncoding; flag?: string } | null,
+    ): Promise<string | Buffer>;
   };
 }
 
@@ -50,15 +57,22 @@ export interface IConfigManager {
 export class ConfigManager implements IConfigManager {
   private homeDir: string;
   private workspaceDir: string;
-  private fsPromises: Required<ConfigManagerOptions>["fsPromises"];
+  private fsPromises: Required<NonNullable<ConfigManagerOptions["fsPromises"]>>;
 
   constructor(options?: ConfigManagerOptions) {
     this.homeDir =
       options?.homeDir || process.env.HOME || process.env.USERPROFILE || "";
     this.workspaceDir = options?.workspaceDir || process.cwd();
-    // Default to the native fs/promises module if none is injected [2]
-    this.fsPromises = (options?.fsPromises ||
-      realFsPromises) as Required<ConfigManagerOptions>["fsPromises"];
+
+    // Construct the fsPromises mapping to ensure backwards compatibility with partial injections
+    const injectedFs = options?.fsPromises;
+    this.fsPromises = {
+      access: injectedFs?.access || realFsPromises.access,
+      mkdir: injectedFs?.mkdir || realFsPromises.mkdir,
+      writeFile: injectedFs?.writeFile || realFsPromises.writeFile,
+      chmod: injectedFs?.chmod || realFsPromises.chmod,
+      readFile: injectedFs?.readFile || realFsPromises.readFile,
+    } as Required<NonNullable<ConfigManagerOptions["fsPromises"]>>;
   }
 
   /**
@@ -133,9 +147,51 @@ export class ConfigManager implements IConfigManager {
   }
 
   /**
-   * Retrieve parameterized command templates (stubbed for future JSON configuration parsing steps)
+   * Retrieve parameterized command templates from the local agent.config.json configuration.
+   * Ensures that command templates are strictly structured as arrays of strings.
    */
   async getCommandTemplate(key: string): Promise<string[]> {
-    return [];
+    const configPath = this.getWorkspaceConfigPath();
+    const content = await this.fsPromises.readFile(configPath, {
+      encoding: "utf-8",
+    });
+    const parsed = JSON.parse(content as string);
+
+    if (!parsed || typeof parsed !== "object") {
+      throw new Error(`Invalid configuration format in ${configPath}`);
+    }
+
+    let template: unknown;
+    let found = false;
+
+    if (key in parsed) {
+      template = (parsed as Record<string, unknown>)[key];
+      found = true;
+    } else if (
+      "commands" in parsed &&
+      parsed.commands &&
+      typeof parsed.commands === "object" &&
+      key in parsed.commands
+    ) {
+      template = (parsed.commands as Record<string, unknown>)[key];
+      found = true;
+    }
+
+    if (!found) {
+      throw new Error(
+        `Command template '${key}' was not found in agent.config.json.`,
+      );
+    }
+
+    if (
+      !Array.isArray(template) ||
+      !template.every((item) => typeof item === "string")
+    ) {
+      throw new Error(
+        `Command template '${key}' must be defined strictly as an array of strings to prevent shell-injection vulnerabilities.`,
+      );
+    }
+
+    return template as string[];
   }
 }

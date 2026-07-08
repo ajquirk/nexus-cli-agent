@@ -155,9 +155,6 @@ The architectural metaphor for `nexus` is **"A Transactional Database Session Co
     getConfigDirectoryPath(): string;
   }
   ```
-
-````
-
 - **The Hidden Internals (Complexity):**
   - Filesystem configuration handling for POSIX systems (verifying permission masks with `fs.stat` and applying `0o700` recursively to `~/.config/nexus/`) [2].
   - Validation checks to block config parsing errors under non-POSIX runtime environments (e.g., fallback behaviors for Windows where standard POSIX permission flags are ignored).
@@ -422,7 +419,9 @@ Once I approve Phase 1 and provide the requested files, you must generate:
 
 1. **The TypeScript interfaces or types** representing the module's contract, matching the signatures defined in Section 3 of the PRD exactly.
 2. **The Vitest test file (`*.test.ts`)** containing thorough test coverage asserting the expected behavior, edge cases, and side-effect isolation requirements.
-3. A skeleton structure of the implementation file (`*.ts`) containing only empty functions/classes and types to allow the test file to compile.
+3. **An implementation structure for the file (`*.ts`)** to allow the test file to compile under the following strict conditions:
+   - **If the target file is NEW:** Provide a clean skeleton file containing only empty stub functions/classes and types.
+   - **If the target file ALREADY EXISTS:** Do NOT output a blank skeleton, do NOT stub out pre-existing working code, and do NOT delete prior logic. You must output the file with its existing implementation fully intact, only appending the minimal new empty stub methods or types required for the newly drafted tests to compile.
 
 _Your test design must verify all edge cases, expected failures, and mock standard node side-effects. Wait for me to run the test (which should fail) and give you the go-ahead for Phase 3._
 
@@ -441,4 +440,3 @@ Once I confirm the test is drafted and compiles, you must generate:
 ## TARGET TASK TO IMPLEMENT:
 
 <INSERT TARGET TASK HERE>
-````
