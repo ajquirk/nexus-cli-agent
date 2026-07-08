@@ -1,9 +1,86 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { SandboxBranchManager } from "./SandboxBranchManager.js";
+
+// Intercept child_process for ESM-safe mocking on isolated tests
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    execFileSync: (file: string, args: string[], options: any) => {
+      const customMock = (globalThis as any).__mockExecFileSync;
+      if (customMock) {
+        return customMock(file, args, options);
+      }
+      return actual.execFileSync(file, args, options);
+    },
+  };
+});
+
+describe("SandboxBranchManager - Isolated Mock Tests", () => {
+  beforeEach(() => {
+    (globalThis as any).__mockExecFileSync = undefined;
+  });
+
+  afterEach(() => {
+    (globalThis as any).__mockExecFileSync = undefined;
+  });
+
+  it("should execute correct sequential Git commands for applySandboxBranch", async () => {
+    const executedCalls: Array<{ file: string; args: string[]; options: any }> =
+      [];
+
+    // Define the mock behavior specifically for this isolated test
+    (globalThis as any).__mockExecFileSync = (
+      file: string,
+      args: string[],
+      options: any,
+    ) => {
+      executedCalls.push({ file, args, options });
+      if (args[0] === "status") {
+        return "M src/file.ts\n";
+      }
+      return "";
+    };
+
+    const manager = new SandboxBranchManager({ workingDir: "/mock/repo" });
+    await manager.applySandboxBranch("task-alpha");
+
+    // Verify exactly 4 Git commands are called
+    expect(executedCalls).toHaveLength(4);
+
+    // Call 1: Check work tree
+    expect(executedCalls[0]).toEqual({
+      file: "git",
+      args: ["rev-parse", "--is-inside-work-tree"],
+      options: { cwd: "/mock/repo", stdio: "ignore" },
+    });
+
+    // Call 2: Status check
+    expect(executedCalls[1]).toEqual({
+      file: "git",
+      args: ["status", "--porcelain"],
+      options: { cwd: "/mock/repo", encoding: "utf8", stdio: "pipe" },
+    });
+
+    // Call 3: Stash dirty workspace
+    expect(executedCalls[2]).toEqual({
+      file: "git",
+      args: ["stash", "push", "-u", "-m", "nexus-backup: task-alpha"],
+      options: { cwd: "/mock/repo", encoding: "utf8", stdio: "pipe" },
+    });
+
+    // Call 4: Checkout target branch
+    expect(executedCalls[3]).toEqual({
+      file: "git",
+      args: ["checkout", "-b", "agent/task-alpha"],
+      options: { cwd: "/mock/repo", encoding: "utf8", stdio: "pipe" },
+    });
+  });
+});
 
 describe("SandboxBranchManager", () => {
   let tempRepoPath: string;
@@ -90,40 +167,31 @@ describe("SandboxBranchManager", () => {
 
     const manager = new SandboxBranchManager({ workingDir: tempRepoPath });
 
-    // 1. Create a dirty file in the repository to simulate local changes
     const localChangeFile = join(tempRepoPath, "local-work.txt");
     await writeFile(localChangeFile, "my local modifications");
 
-    // 2. Start sandbox branch
     const taskId = "task-merge-111";
     await manager.applySandboxBranch(taskId);
 
-    // 3. Simulate agent making a successful edit and committing it
     const agentFile = join(tempRepoPath, "agent-output.txt");
     await writeFile(agentFile, "agent work completed successfully");
     runGit(["add", "agent-output.txt"]);
     runGit(["commit", "-m", "Agent: Completed task-merge-111"]);
 
-    // 4. Execute the merge routine
     await manager.mergeSandboxBranch(taskId);
 
-    // 5. Assert: branch is back to 'main'
     const currentBranch = runGit(["branch", "--show-current"]);
     expect(currentBranch).toBe("main");
 
-    // 6. Assert: sandbox branch agent/task-merge-111 is deleted
     const branches = runGit(["branch"]);
     expect(branches).not.toContain(`agent/${taskId}`);
 
-    // 7. Assert: agent work is successfully merged and present on main
     const agentFileContent = await readFile(agentFile, "utf8");
     expect(agentFileContent).toBe("agent work completed successfully");
 
-    // 8. Assert: local stashed work has been successfully popped and restored
     const localContent = await readFile(localChangeFile, "utf8");
     expect(localContent).toBe("my local modifications");
 
-    // 9. Assert: backup stash for this task was cleared
     const stashList = runGit(["stash", "list"]);
     expect(stashList).not.toContain(`nexus-backup: ${taskId}`);
   });
@@ -133,42 +201,33 @@ describe("SandboxBranchManager", () => {
 
     const manager = new SandboxBranchManager({ workingDir: tempRepoPath });
 
-    // 1. Create local uncommitted work
     const localChangeFile = join(tempRepoPath, "local-work.txt");
     await writeFile(localChangeFile, "my local modifications");
 
-    // 2. Start sandbox branch
     const taskId = "task-restore-222";
     await manager.applySandboxBranch(taskId);
 
-    // 3. Simulate agent edits and committing
     const agentFile = join(tempRepoPath, "agent-work-failed.txt");
     await writeFile(agentFile, "failed experimental work");
     runGit(["add", "agent-work-failed.txt"]);
     runGit(["commit", "-m", "Agent: Failed experiment"]);
 
-    // 4. Execute restore routine to discard changes
     await manager.restoreOriginalBranch(taskId);
 
-    // 5. Assert: branch is back to 'main'
     const currentBranch = runGit(["branch", "--show-current"]);
     expect(currentBranch).toBe("main");
 
-    // 6. Assert: sandbox branch is deleted
     const branches = runGit(["branch"]);
     expect(branches).not.toContain(`agent/${taskId}`);
 
-    // 7. Assert: experimental changes are absent from main branch
     const agentFileExists = await readFile(agentFile, "utf8")
       .then(() => true)
       .catch(() => false);
     expect(agentFileExists).toBe(false);
 
-    // 8. Assert: original uncommitted changes are restored
     const localContent = await readFile(localChangeFile, "utf8");
     expect(localContent).toBe("my local modifications");
 
-    // 9. Assert: backup stash was cleared
     const stashList = runGit(["stash", "list"]);
     expect(stashList).not.toContain(`nexus-backup: ${taskId}`);
   });
@@ -178,20 +237,16 @@ describe("SandboxBranchManager", () => {
 
     const manager = new SandboxBranchManager({ workingDir: tempRepoPath });
 
-    // 1. Write an initial file and commit it (already done in setupGitRepo, README.md has "Initial content.")
     const filePath = join(tempRepoPath, "README.md");
 
-    // 2. Create a local uncommitted modification on line 2
     await writeFile(
       filePath,
       "# Test Project\nInitial content.\nUser local change.",
     );
 
-    // 3. Apply sandbox branch (this stashes the local change)
     const taskId = "task-conflict-333";
     await manager.applySandboxBranch(taskId);
 
-    // 4. On the sandbox branch, write a conflicting change on line 2 and commit it
     await writeFile(
       filePath,
       "# Test Project\nInitial content.\nAgent conflicting change.",
@@ -199,16 +254,13 @@ describe("SandboxBranchManager", () => {
     runGit(["add", "README.md"]);
     runGit(["commit", "-m", "Agent: Conflicting change"]);
 
-    // 5. Attempt to merge. This should fail because popping the stash conflicts with the agent's commit
     await expect(manager.mergeSandboxBranch(taskId)).rejects.toThrow(
       /Stash pop resulted in a merge conflict/,
     );
 
-    // 6. Verify that the stash was NOT dropped/lost because of the conflict (standard Git safety)
     const stashList = runGit(["stash", "list"]);
     expect(stashList).toContain(`nexus-backup: ${taskId}`);
 
-    // 7. Verify conflict markers exist in the working directory file
     const fileContent = await readFile(filePath, "utf8");
     expect(fileContent).toContain("<<<<<<<");
     expect(fileContent).toContain("=======");
@@ -226,17 +278,14 @@ describe("SandboxBranchManager", () => {
     const taskId = "task-idempotent-restore";
     await manager.applySandboxBranch(taskId);
 
-    // Call restore the first time
     await manager.restoreOriginalBranch(taskId);
 
-    // Assert the branch has reverted and stash is popped
     const currentBranch = runGit(["branch", "--show-current"]);
     expect(currentBranch).toBe("main");
     expect(await readFile(localChangeFile, "utf8")).toBe(
       "my local modifications",
     );
 
-    // Call restore a second time (should be a graceful no-op)
     await expect(manager.restoreOriginalBranch(taskId)).resolves.not.toThrow();
   });
 
@@ -251,23 +300,19 @@ describe("SandboxBranchManager", () => {
     const taskId = "task-idempotent-merge";
     await manager.applySandboxBranch(taskId);
 
-    // Simulate an agent commit
     const agentFile = join(tempRepoPath, "agent-output.txt");
     await writeFile(agentFile, "completed work");
     runGit(["add", "agent-output.txt"]);
     runGit(["commit", "-m", "Agent: Completed work"]);
 
-    // Call merge the first time
     await manager.mergeSandboxBranch(taskId);
 
-    // Assert branch is back to main, agent work is merged, local changes popped
     expect(runGit(["branch", "--show-current"])).toBe("main");
     expect(await readFile(agentFile, "utf8")).toBe("completed work");
     expect(await readFile(localChangeFile, "utf8")).toBe(
       "my local modifications",
     );
 
-    // Call merge a second time (should be a graceful no-op)
     await expect(manager.mergeSandboxBranch(taskId)).resolves.not.toThrow();
   });
 });

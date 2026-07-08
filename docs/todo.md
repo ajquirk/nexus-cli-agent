@@ -158,3 +158,11 @@ To make the application fully interactive, we should:
 #### Refactoring Recommendations
 
 - Pre-Caching Config Payload: If getCommandTemplate is frequently queried, the configuration JSON file could be read once and cached in memory. However, since the PRD treats modifications as potentially dynamic (matching transactional sessions), reading the file fresh ensures we always pick up configuration modifications made on-disk, maintaining high session reliability. Given the CLI context, the disk access overhead is negligible.
+
+---
+
+### TASK 05
+
+#### Refactoring Recommendations
+
+- Execution abstracting: If we want to fully separate Git executions from low-level child-process implementations, we could later introduce a simple GitExecutor helper interface. This would prevent test files from having to mock standard library components like node:child_process directly and would simplify mocking. However, the current setup is highly clean and works perfectly without introducing extra abstractions.
