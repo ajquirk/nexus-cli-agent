@@ -166,3 +166,16 @@ To make the application fully interactive, we should:
 #### Refactoring Recommendations
 
 - Execution abstracting: If we want to fully separate Git executions from low-level child-process implementations, we could later introduce a simple GitExecutor helper interface. This would prevent test files from having to mock standard library components like node:child_process directly and would simplify mocking. However, the current setup is highly clean and works perfectly without introducing extra abstractions.
+
+---
+
+### TASK 06
+
+#### Refactoring Recommendations
+
+The current implementation is robust and conforms to all functional requirements. To enhance future maintainability, we can suggest the following minor, non-breaking refactoring paths:
+
+- Deterministic Stash Parsing:
+  The findOriginalBranch and popStashForTask methods currently match the task ID strictly using regexes over the text registers of git outputs. If needed, the taskId parameter format can be sanitized or validated to confirm it does not contain shell-breaking metadata, though shell-less process spawning (execFileSync) already mitigates standard process injection vectors.
+- Logging Interceptor:
+  For debugging execution flows in dry run situations, we could introduce an optional logger interface into SandboxBranchManagerOptions. This would allow logging the checked-out branch, the stashed changesets, and git cleanup steps without impacting the core production logging behavior.

@@ -80,6 +80,116 @@ describe("SandboxBranchManager - Isolated Mock Tests", () => {
       options: { cwd: "/mock/repo", encoding: "utf8", stdio: "pipe" },
     });
   });
+
+  it("should execute correct sequential Git commands for restoreOriginalBranch (Unit Test Setup)", async () => {
+    const executedCalls: Array<{ file: string; args: string[]; options: any }> =
+      [];
+
+    (globalThis as any).__mockExecFileSync = (
+      file: string,
+      args: string[],
+      options: any,
+    ) => {
+      executedCalls.push({ file, args, options });
+
+      if (args[0] === "branch" && args[1] === "--list") {
+        return "agent/task-alpha"; // Sandbox branch exists
+      }
+      if (args[0] === "branch" && args[1] === "--show-current") {
+        return "agent/task-alpha"; // We are on the sandbox branch
+      }
+      if (args[0] === "reflog") {
+        return "1a2b3c4 HEAD@{0}: checkout: moving from main to agent/task-alpha";
+      }
+      if (args[0] === "stash" && args[1] === "list") {
+        return "stash@{0}: WIP on main: nexus-backup: task-alpha";
+      }
+      return "";
+    };
+
+    const manager = new SandboxBranchManager({ workingDir: "/mock/repo" });
+    await manager.restoreOriginalBranch("task-alpha");
+
+    // Verify sequential operations:
+    // 1. check sandbox branch exists: branch --list agent/task-alpha
+    expect(executedCalls[0].args).toEqual([
+      "branch",
+      "--list",
+      "agent/task-alpha",
+    ]);
+    // 2. get reflog to find original branch: reflog -n 100
+    expect(executedCalls[1].args).toEqual(["reflog", "-n", "100"]);
+    // 3. get current branch: branch --show-current
+    expect(executedCalls[2].args).toEqual(["branch", "--show-current"]);
+    // 4. reset hard to HEAD: reset --hard HEAD
+    expect(executedCalls[3].args).toEqual(["reset", "--hard", "HEAD"]);
+    // 5. clean untracked files: clean -fd
+    expect(executedCalls[4].args).toEqual(["clean", "-fd"]);
+    // 6. checkout original branch: checkout main
+    expect(executedCalls[5].args).toEqual(["checkout", "main"]);
+    // 7. delete sandbox branch: branch -D agent/task-alpha
+    expect(executedCalls[6].args).toEqual(["branch", "-D", "agent/task-alpha"]);
+    // 8. list stashes: stash list
+    expect(executedCalls[7].args).toEqual(["stash", "list"]);
+    // 9. pop correct stash entry: stash pop stash@{0}
+    expect(executedCalls[8].args).toEqual(["stash", "pop", "stash@{0}"]);
+  });
+
+  it("should execute correct sequential Git commands for mergeSandboxBranch (Unit Test Setup)", async () => {
+    const executedCalls: Array<{ file: string; args: string[]; options: any }> =
+      [];
+
+    (globalThis as any).__mockExecFileSync = (
+      file: string,
+      args: string[],
+      options: any,
+    ) => {
+      executedCalls.push({ file, args, options });
+
+      if (args[0] === "branch" && args[1] === "--list") {
+        return "agent/task-alpha";
+      }
+      if (args[0] === "branch" && args[1] === "--show-current") {
+        return "agent/task-alpha";
+      }
+      if (args[0] === "reflog") {
+        return "1a2b3c4 HEAD@{0}: checkout: moving from main to agent/task-alpha";
+      }
+      if (args[0] === "stash" && args[1] === "list") {
+        return "stash@{0}: WIP on main: nexus-backup: task-alpha";
+      }
+      return "";
+    };
+
+    const manager = new SandboxBranchManager({ workingDir: "/mock/repo" });
+    await manager.mergeSandboxBranch("task-alpha");
+
+    // Verify sequential operations:
+    // 1. check sandbox branch exists: branch --list agent/task-alpha
+    expect(executedCalls[0].args).toEqual([
+      "branch",
+      "--list",
+      "agent/task-alpha",
+    ]);
+    // 2. get reflog to find original branch: reflog -n 100
+    expect(executedCalls[1].args).toEqual(["reflog", "-n", "100"]);
+    // 3. get current branch: branch --show-current
+    expect(executedCalls[2].args).toEqual(["branch", "--show-current"]);
+    // 4. checkout original branch: checkout main
+    expect(executedCalls[3].args).toEqual(["checkout", "main"]);
+    // 5. merge with fast-forward: merge --ff-only agent/task-alpha
+    expect(executedCalls[4].args).toEqual([
+      "merge",
+      "--ff-only",
+      "agent/task-alpha",
+    ]);
+    // 6. delete sandbox branch: branch -D agent/task-alpha
+    expect(executedCalls[5].args).toEqual(["branch", "-D", "agent/task-alpha"]);
+    // 7. list stashes: stash list
+    expect(executedCalls[6].args).toEqual(["stash", "list"]);
+    // 8. pop correct stash entry: stash pop stash@{0}
+    expect(executedCalls[7].args).toEqual(["stash", "pop", "stash@{0}"]);
+  });
 });
 
 describe("SandboxBranchManager", () => {
