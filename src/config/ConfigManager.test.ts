@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -24,6 +24,7 @@ describe("ConfigManager [TASK-01]", () => {
     if (fs.existsSync(tempWorkspaceDir)) {
       fs.rmSync(tempWorkspaceDir, { recursive: true, force: true });
     }
+    vi.restoreAllMocks();
   });
 
   it("should construct with paths and resolve correct sub-paths", () => {
@@ -34,6 +35,7 @@ describe("ConfigManager [TASK-01]", () => {
 
     const expectedConfigDir = path.join(tempHomeDir, ".config", "nexus");
     expect(manager.getNexusConfigDir()).toBe(expectedConfigDir);
+    expect(manager.getConfigDirectoryPath()).toBe(expectedConfigDir);
     expect(manager.getEnvFilePath()).toBe(path.join(expectedConfigDir, ".env"));
     expect(manager.getWorkspaceConfigPath()).toBe(
       path.join(tempWorkspaceDir, "agent.config.json"),
@@ -55,11 +57,11 @@ describe("ConfigManager [TASK-01]", () => {
     // 1. Assert Nexus config directory creation
     expect(fs.existsSync(configDir)).toBe(true);
 
-    // 2. Assert permissions of ~/.config/nexus/ are 0600 on supporting platforms
+    // 2. Assert permissions of ~/.config/nexus/ are 0o700 on supporting platforms
     if (process.platform !== "win32") {
       const stats = fs.statSync(configDir);
       const mode = stats.mode & 0o777;
-      expect(mode).toBe(0o600);
+      expect(mode).toBe(0o700);
     }
 
     // 3. Assert credentials file exists
@@ -111,5 +113,80 @@ describe("ConfigManager [TASK-01]", () => {
       fs.readFileSync(workspaceConfigFile, "utf-8"),
     );
     expect(configContent.limits.stepLimit).toBe(999);
+  });
+
+  describe("REQ-01 POSIX Directory Permission Enforcement", () => {
+    it("should create directory and invoke chmod 0o700 on POSIX environment", async () => {
+      // Mock platform to be POSIX
+      const platformSpy = vi
+        .spyOn(process, "platform", "get")
+        .mockReturnValue("linux");
+
+      // Define isolated mock functions for fs/promises dependencies
+      const mockMkdir = vi.fn().mockResolvedValue(undefined);
+      const mockChmod = vi.fn().mockResolvedValue(undefined);
+      const mockAccess = vi.fn().mockRejectedValue(new Error("ENOENT"));
+      const mockWriteFile = vi.fn().mockResolvedValue(undefined);
+
+      const mockFsPromises = {
+        access: mockAccess,
+        mkdir: mockMkdir,
+        chmod: mockChmod,
+        writeFile: mockWriteFile,
+      };
+
+      const manager = new ConfigManager({
+        homeDir: "/home/user",
+        workspaceDir: "/workspace",
+        fsPromises: mockFsPromises,
+      });
+
+      await manager.initializeConfig();
+
+      const expectedConfigDir = path.join("/home/user", ".config", "nexus");
+
+      // Assert that the injected mkdir mock was called with the target config directory
+      expect(mockMkdir).toHaveBeenCalledWith(
+        expectedConfigDir,
+        expect.objectContaining({ recursive: true }),
+      );
+
+      // Assert that the injected chmod mock was triggered with user-only permissions (0o700)
+      expect(mockChmod).toHaveBeenCalledWith(expectedConfigDir, 0o700);
+
+      platformSpy.mockRestore();
+    });
+
+    it("should skip chmod on Windows platforms", async () => {
+      // Mock platform to be Windows
+      const platformSpy = vi
+        .spyOn(process, "platform", "get")
+        .mockReturnValue("win32");
+
+      const mockMkdir = vi.fn().mockResolvedValue(undefined);
+      const mockChmod = vi.fn().mockResolvedValue(undefined);
+      const mockAccess = vi.fn().mockRejectedValue(new Error("ENOENT"));
+      const mockWriteFile = vi.fn().mockResolvedValue(undefined);
+
+      const mockFsPromises = {
+        access: mockAccess,
+        mkdir: mockMkdir,
+        chmod: mockChmod,
+        writeFile: mockWriteFile,
+      };
+
+      const manager = new ConfigManager({
+        homeDir: "C:\\Users\\user",
+        workspaceDir: "C:\\workspace",
+        fsPromises: mockFsPromises,
+      });
+
+      await manager.initializeConfig();
+
+      // Assert chmod is bypassed
+      expect(mockChmod).not.toHaveBeenCalled();
+
+      platformSpy.mockRestore();
+    });
   });
 });

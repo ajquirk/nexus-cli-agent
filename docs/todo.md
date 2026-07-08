@@ -138,3 +138,11 @@ If `git branch --show-current` returns an empty string (signifying a detached HE
 
 - Graceful Shell Integration: For production usage, we recommend placing a lightweight wrapper script in a binary entry point (e.g., bin/nexus.js or src/index.ts) that calls runCLI().catch(...) and exits the process with code 1 upon uncaught errors, keeping the core testable runCLI free of rigid process.exit() calls that would disrupt test runners.
 - Unified Step Limit Propagation: The CLI config parses agent.config.json limits during bootstrap. In a future task, we could load the parsed stepLimit from the local ConfigManager workspace configuration and pass it automatically into options.stepLimit inside the runCLI execution branch to seamlessly link user preferences to the active loop boundaries.
+
+### Recommended Next Steps
+
+To make the application fully interactive, we should:
+
+- Implement the default LanguageModel resolver (such as reading API keys from ~/.config/nexus/.env and using @ai-sdk/openai or similar).
+- Create a unified SandboxExecutorImpl class to resolve the Git, Patch, and command execution components into a single object.
+- Wire these defaults into src/cli.ts and set up the shebang binary script.

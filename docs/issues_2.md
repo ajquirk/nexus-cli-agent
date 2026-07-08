@@ -1,338 +1,228 @@
 ### Part 1: Dependency Graph (Text-Based)
 
-The following diagram tracks the logical progression of development. Unblocked, foundational database and validation tasks are built first, followed by system logic, UI, and ultimately the main agentic loop integration.
+The development of the `nexus` Autonomous Coding Agent is divided into three key phases, moving from foundational isolated utilities to transaction management, and finally to cognitive loop integration.
 
 ```text
-==============================================================================================
-PHASE 1: Foundation (Config, Database, and Workspace Checks)
-==============================================================================================
-[TASK-01: Config Initializer] ---------> [TASK-02: SQLite Schema Setup]
-                                                  |
-                                                  v
-                                         [TASK-03: DB Step Logs]
-                                         [TASK-04: DB Cooldown Ops]
+========================================================================================
+PHASE 1: FOUNDATIONAL ISOLATED UTILITIES
+========================================================================================
 
-[TASK-05: Git Base Check] -------------> [TASK-06: Sandbox Git Stash & Branch]
-                                                  |
-                                                  v
-                                         [TASK-07: Sandbox Merge & Restore]
-
-==============================================================================================
-PHASE 2: Execution Security & Patching Engines
-==============================================================================================
-[TASK-08: Shell Injection Check] ------> [TASK-09: Safe-Command Runner]
-
-[TASK-10: Search-and-Replace Patching]
-
-==============================================================================================
-PHASE 3: LLM & UI Integration
-==============================================================================================
-[TASK-11: LLM Core Orchestration] -----> [TASK-12: LLM Rate Limit/Backoff] (Requires TASK-04)
-                                  -----> [TASK-13: LLM History Context Pruner] (Requires TASK-03)
-
-[TASK-14: Terminal UI Core] ------------> [TASK-15: UI Prompts & Diff Render]
-
-==============================================================================================
-PHASE 4: Orchestrated Runtime (Agentic Loop & CLI Harness)
-==============================================================================================
-[TASK-03] (DB Step logs) ---------\
-[TASK-07] (Sandbox Lifecycle) -----\
-[TASK-09] (Safe Execution) ---------\---> [TASK-16: Core Agentic Loop State Machine]
-[TASK-10] (Code Patching) ----------/               |
-[TASK-11] (LLM Core) -------------/                 v
-[TASK-15] (UI Approvals) --------/        [TASK-17: Step Limit Enforcement]
-                                                    |
-                                                    v
-                                          [TASK-18: Process Interrupt Handler]
-                                                    |
-                                                    v
-                                          [TASK-19: CLI Hook Commands (init/run)]
-==============================================================================================
+  [TASK-01: Config POSIX Init] ──> [TASK-02: Config JSON Parsing]
+                                                    │
+  [TASK-03: Patch Execution] ───────────────────────┼──────────────┐
+                                                    │              │
+                                                    ▼              │
+                                    [TASK-04: Safe Shell-less Run] │
+                                                    │              │
+                                                    ▼              │
+  [TASK-05: Sandbox Git Setup] ──> [TASK-06: Sandbox Git Restore]  │
+                                                    │              │
+========================================================================================
+PHASE 2: ORCHESTRATED SANDBOX ENVIRONMENT
+========================================================================================
+                                                    │              │
+                                                    ▼              │
+                                    [TASK-07: Sandbox Lifecycle] ◄─┘
+                                                    │
+                                                    ▼
+                                    [TASK-08: Sandbox Transactions]
+                                                    │
+========================================================================================
+PHASE 3: COGNITIVE & CORE STATE LOOP
+========================================================================================
+                                                    │
+  [TASK-09: LLM Zero-Turn Init] ──> [TASK-10: LLM Context Pruning] │
+                                                    │              │
+                                                    ▼              │
+                                    [TASK-11: Core State Machine] ◄┘
+                                                    │
+                                                    ▼
+                                    [TASK-12: End-to-End Orchestration]
 ```
 
 ---
 
 ### Part 2: Chronological Task Cards
 
-#### [TASK-01]: Local Environment & Configuration Initialization
+#### [TASK-01]: ConfigManager POSIX Directory Permission Enforcement
 
-- **Description:** Implement local user-level configuration path resolution, generate the default workspace configuration file template `agent.config.json` in the current project root, and ensure the configuration directory path is secured with `0600` permissions.
+- **Description:** Implement `ConfigManager.initializeConfig()` and `ConfigManager.getConfigDirectoryPath()`. The module must establish the workspace configuration directory `~/.config/nexus/` and enforce a restrictive Unix permission mask of `0o700` (User read/write/execute only) on non-Windows environments to prevent multi-user permission leaks.
 - **Module Scope:**
-  - _In Scope:_ Creation of `~/.config/nexus/.env` (credentials file) and root-level `agent.config.json`. File permission utility routines.
-  - _Out of Scope:_ Actual SQLite file instantiation or interactive CLI questions.
+  - _In Scope:_ `ConfigManager` directory creation, POSIX environment checks, `fs` module permission setting (`0o700`), fallback handlers for Windows environments where Unix flags are ignored.
+  - _Out of Scope:_ Loading or validating the `agent.config.json` content file structure.
 - **Dependencies:**
   - _Blocked By:_ None
-  - _Blocks:_ [TASK-02], [TASK-19]
+  - _Blocks:_ [TASK-02]
 - **TDD Verification Spec:**
-  - _Unit Test Setup:_ Mock the home directory (`process.env.HOME`) to target a temporary filesystem path using `fs.mkdtempSync`.
-  - _Test Execution & Assertion:_ Execute `ConfigManager.initializeConfig()`. Assert that `~/.config/nexus/` is successfully created, that its filesystem mode is verified as `0600` via `fs.statSync()`, and that an empty template `agent.config.json` containing default configuration settings exists in the current working directory.
+  - _Unit Test Setup:_ Mock POSIX platform environment (`process.platform = 'linux'`), mock filesystem modules `fs.promises.mkdir` and `fs.promises.chmod`, and mock homedir resolution.
+  - _Test Execution & Assertion:_ Call `ConfigManager.initializeConfig()`. Assert that `fs.promises.mkdir` is called with the resolved path matching `~/.config/nexus/` and that `fs.promises.chmod` is triggered with the octal mask `0o700`.
 
 ---
 
-#### [TASK-02]: SQLite Database Schema & Initialization
+#### [TASK-02]: ConfigManager JSON File Parsing & Template Retrieval
 
-- **Description:** Setup and run database initialization scripts utilizing `better-sqlite3` to instantiate the SQLite storage database at `~/.config/nexus/history.db` with write-ahead logging (WAL) enabled.
+- **Description:** Implement `ConfigManager.getCommandTemplate(key)`. The manager must read and parse `agent.config.json` inside the initialized configuration directory. It must load execution configurations, verifying that predefined safe commands are represented strictly as array templates rather than vulnerable raw execution strings.
 - **Module Scope:**
-  - _In Scope:_ Schema definitions for tables: `execution_sessions`, `step_logs`, and `provider_cooldowns`.
-  - _Out of Scope:_ Data Insertion logic, log generation, or network tracking logic.
+  - _In Scope:_ Reading and validating `agent.config.json` using JSON.parse, returning string arrays associated with structural keys.
+  - _Out of Scope:_ Actual runtime process spawning or substitution of placeholders.
 - **Dependencies:**
   - _Blocked By:_ [TASK-01]
-  - _Blocks:_ [TASK-03], [TASK-04]
+  - _Blocks:_ [TASK-04], [TASK-11]
 - **TDD Verification Spec:**
-  - _Unit Test Setup:_ Configure a temporary database path in-memory (`:memory:`) or within a temporary directory.
-  - _Test Execution & Assertion:_ Execute `SQLiteStorageManager.initializeDatabase()`. Run PRAGMA queries (`PRAGMA journal_mode;` and query sqlite_master) to assert that the database operates in `wal` mode and that the tables `execution_sessions`, `step_logs`, and `provider_cooldowns` exist with correct column structures.
+  - _Unit Test Setup:_ Mock `fs.promises.readFile` to return a valid JSON payload containing the mapping `{"test": ["npm", "run", "test", "--", "{target}"]}`.
+  - _Test Execution & Assertion:_ Invoke `ConfigManager.getCommandTemplate("test")`. Assert that the returned array is equivalent to `["npm", "run", "test", "--", "{target}"]`. Assert that an error is thrown if the configuration contains raw string definitions instead of string arrays.
 
 ---
 
-#### [TASK-03]: SQLite Step Logging & History Operations
+#### [TASK-03]: PatchExecutor Search-Replace Core & Multi-Match Detection
 
-- **Description:** Implement step logging storage and historical step extraction routines matching the `SQLiteStorageManager` interface to record individual transaction steps.
+- **Description:** Implement `PatchExecutor.applyPatch()`. Read local target codebase files using UTF-8 encoding, perform line-aligned search and replace modifications, and detect overlapping or multi-match instances within the file body.
 - **Module Scope:**
-  - _In Scope:_ Serialization and execution of SQL queries to insert data into `step_logs` and query histories ordered chronologically.
-  - _Out of Scope:_ Token parsing algorithms or external LLM API logic.
+  - _In Scope:_ File buffer manipulation, character decoding, line-by-line target matching logic, and raising a specialized `AmbiguousPatchError` when finding duplicate target occurrences.
+  - _Out of Scope:_ Interfacing with Git branch commands or creating backup files.
+- **Dependencies:**
+  - _Blocked By:_ None
+  - _Blocks:_ [TASK-08]
+- **TDD Verification Spec:**
+  - _Unit Test Setup:_ Mock `fs.promises.readFile` and `fs.promises.writeFile`. Set up the mock file stream to contain duplicate target segments:
+    ```typescript
+    const code = "const x = 1;\nconsole.log(x);\nconst x = 1;";
+    ```
+  - _Test Execution & Assertion:_ Call `PatchExecutor.applyPatch()` with a patch containing `find: "const x = 1;"` and `replace: "const x = 2;"`. Verify that an `AmbiguousPatchError` is thrown and that no changes are written to the filesystem mock.
+
+---
+
+#### [TASK-04]: SafeCommandExecutor Shell-less Process Spawning
+
+- **Description:** Implement `SafeCommandExecutor.executeCommand()`. Dynamically bind variables into index positions within defined template arrays, and execute processes using `child_process.spawn` ensuring `shell: false` is hardcoded to prevent injection vulnerabilities.
+- **Module Scope:**
+  - _In Scope:_ Template variable replacement mechanisms, raw shell-less command executions, parsing process exit codes, and reading stdout/stderr buffers.
+  - _Out of Scope:_ Fetching raw template configuration details from disk directly (dependencies should be supplied dynamically or resolved through a passed instance of `ConfigManager`).
 - **Dependencies:**
   - _Blocked By:_ [TASK-02]
-  - _Blocks:_ [TASK-13], [TASK-16]
+  - _Blocks:_ [TASK-08]
 - **TDD Verification Spec:**
-  - _Unit Test Setup:_ Instantiate an initialized in-memory SQLite helper.
-  - _Test Execution & Assertion:_ Call `SQLiteStorageManager.saveStep("session-abc", 1, { timestamp: "2026-06-30T12:00:00Z", toolName: "read_file", args: { path: "src/auth.ts" }, tokenCountEstimate: 150 })`. Retrieve using `SQLiteStorageManager.getSessionHistory("session-abc")`. Assert that the history length is 1, and the returned payload matches the serialized step input.
+  - _Unit Test Setup:_ Mock `child_process.spawn` to return custom streams and exit code handlers without triggering real execution cycles.
+  - _Test Execution & Assertion:_ Call `SafeCommandExecutor.executeCommand` with template array `["npm", "run", "test", "--", "{target}"]` and substitutions `{ target: "; rm -rf /; " }`. Assert that the spawned process arguments array receives exactly `["run", "test", "--", "; rm -rf /; "]` and that the options block explicitly includes `{ shell: false }`.
 
 ---
 
-#### [TASK-04]: SQLite Rate-Limit Cooldown Operations
+#### [TASK-05]: SandboxBranchManager Git Isolation & Stash Setup
 
-- **Description:** Implement storage tracking functions to save and retrieve rate-limit epoch timestamps per LLM provider to protect against executing requests during active lockouts.
+- **Description:** Implement stateless Git checkout and stashing routines in `SandboxBranchManager.applySandboxBranch()`. Stash any untracked or active local workspace changes, check out a clean transient target branch keyed by `taskId` (`agent/[taskId]`), and manage Git operation logs.
 - **Module Scope:**
-  - _In Scope:_ Writing and reading key-value pairings of provider names and Unix cooldown timestamps to/from `provider_cooldowns`.
-  - _Out of Scope:_ Dynamic network interceptors or retry backoff delay execution loop wrappers.
-- **Dependencies:**
-  - _Blocked By:_ [TASK-02]
-  - _Blocks:_ [TASK-12]
-- **TDD Verification Spec:**
-  - _Unit Test Setup:_ Initialize a mock database session helper.
-  - _Test Execution & Assertion:_ Call `SQLiteStorageManager.logRateLimitCooldown("openai", 1782844800000)`. Retrieve cooldown value via `SQLiteStorageManager.getRateLimitCooldown("openai")`. Assert that the returned timestamp matches `1782844800000`. Assert that a query for an unlisted provider return `null`.
-
----
-
-#### [TASK-05]: Git Base Validation Check
-
-- **Description:** Implement pre-flight environmental validation checks to assert that the executing workspace path contains an active, valid Git repository.
-- **Module Scope:**
-  - _In Scope:_ Execution of raw Git check operations using Node.js `child_process`.
-  - _Out of Scope:_ Branch switching, modifications, or stashing operations.
+  - _In Scope:_ Command execution of Git stashing and checkout via system shell execution using `child_process.execFile`. Ensuring zero static internal class states are written or saved during executions.
+  - _Out of Scope:_ Reverting sandbox modifications, branch cleanup tasks, or managing patch file transformations.
 - **Dependencies:**
   - _Blocked By:_ None
   - _Blocks:_ [TASK-06]
 - **TDD Verification Spec:**
-  - _Unit Test Setup:_ Create two test directories: one initialized with `git init` and one basic, empty directory.
-  - _Test Execution & Assertion:_ Execute `GitValidator.isGitRepository()` in both targets. Assert that the Git-initialized workspace directory returns `true` and the basic directory returns `false` or throws a clear error.
+  - _Unit Test Setup:_ Mock the module running local process executions (`child_process.execFile`).
+  - _Test Execution & Assertion:_ Call `SandboxBranchManager.applySandboxBranch("task-alpha")`. Assert that the exact sequential list of native commands is triggered:
+    1. `git stash` (to store developer-owned unstaged changes)
+    2. `git checkout -b agent/task-alpha`
 
 ---
 
-#### [TASK-06]: Sandbox Branching - Branch Creation & Stashing
+#### [TASK-06]: SandboxBranchManager Restore and Merge Operations
 
-- **Description:** Implement the startup phase of Sandbox Branching [REQ-03] by stashing uncommitted modifications and creating an isolated tracking branch.
+- **Description:** Implement rollback and merging routines in `SandboxBranchManager.restoreOriginalBranch()` and `SandboxBranchManager.mergeSandboxBranch()`. These methods will reset changes, check back out the original working branch, restore active user stashes cleanly, and merge target workspace session modifications on successful test completions.
 - **Module Scope:**
-  - _In Scope:_ Git stash commands, branch generation `agent/[task-uuid]`, and command exit safety.
-  - _Out of Scope:_ Git branch merging or original working directory restoration.
+  - _In Scope:_ Local Git tracking routines to resolve previous active branch names, merge checks, branch deletes, and applying previous developer stashes.
+  - _Out of Scope:_ Initiating file-level mutations or executing unit test checks directly.
 - **Dependencies:**
   - _Blocked By:_ [TASK-05]
   - _Blocks:_ [TASK-07]
 - **TDD Verification Spec:**
-  - _Unit Test Setup:_ Initialize a test Git workspace. Create an uncommitted file modification on `main`.
-  - _Test Execution & Assertion:_ Instantiate `SandboxBranchManager` and invoke `applySandboxBranch("task-uuid-456")`. Assert that the active working branch becomes `agent/task-uuid-456` and that `git status` reports clean working parameters, verifying files are securely stashed.
+  - _Unit Test Setup:_ Mock native Git executions and state indicators within the target mock repository environment.
+  - _Test Execution & Assertion:_ Invoke `SandboxBranchManager.restoreOriginalBranch("task-alpha")` while tracking original branch metadata mock inputs. Assert that native calls are made to checkout the baseline user branch, delete branch `agent/task-alpha`, and execute `git stash pop` to restore previous developer modifications.
 
 ---
 
-#### [TASK-07]: Sandbox Branching - Recovery & Merging
+#### [TASK-07]: WorkspaceSandboxExecutor Unified Lifecycle Orchestration
 
-- **Description:** Implement the finalization and cleanup phases of Sandbox Branching [REQ-03] by merging successfully validated branches or cleanly discarding failed iterations and restoring stashed edits.
+- **Description:** Implement the structural wrapper orchestrations `WorkspaceSandboxExecutor.initializeWorkspace()` and `WorkspaceSandboxExecutor.finalizeWorkspace()`. These components act as a transactional controller, wrapping lower-level Git isolation state logic to ensure reliable environment setup and teardown.
 - **Module Scope:**
-  - _In Scope:_ Fast-forward branch merging, tracking branch deletions, stashed change recovery (`git stash pop`), and hard resets.
-  - _Out of Scope:_ UI confirmation logic, which is handled via prompt interfaces.
+  - _In Scope:_ Coordinating `SandboxBranchManager` setups, managing sequence errors, tracking current transaction workspace lifecycles, and ensuring a rollback occurs if any workspace initialization fails.
+  - _Out of Scope:_ Performing actual in-file changes or executing test suite templates.
 - **Dependencies:**
   - _Blocked By:_ [TASK-06]
-  - _Blocks:_ [TASK-16]
+  - _Blocks:_ [TASK-08]
 - **TDD Verification Spec:**
-  - _Unit Test Setup:_ Establish a Git testing environment. Create dirty modifications, execute `applySandboxBranch("task-789")`, and add a mock commit on the agent sandbox branch.
-  - _Test Execution & Assertion:_ Call `restoreOriginalBranch()`. Verify that the branch reverts back to `main` and the branch `agent/task-789` is cleanly deleted. Ensure the original uncommitted modifications are popped from the stash and restored.
+  - _Unit Test Setup:_ Mock `SandboxBranchManager` methods (`applySandboxBranch`, `restoreOriginalBranch`, `mergeSandboxBranch`).
+  - _Test Execution & Assertion:_ Call `WorkspaceSandboxExecutor.initializeWorkspace("task-beta")`. Assert that the sequence triggers `SandboxBranchManager.applySandboxBranch("task-beta")`. Call `finalizeWorkspace("task-beta", false)`. Assert that the system triggers rollback procedures via `SandboxBranchManager.restoreOriginalBranch("task-beta")`.
 
 ---
 
-#### [TASK-08]: Parameterized Safe-Command Shell-Injection Validator
+#### [TASK-08]: WorkspaceSandboxExecutor Transactional Operations
 
-- **Description:** Create a robust validation utility to parse incoming target file path arguments for parameterized terminal execution blocks to prevent command chain injection [REQ-04].
+- **Description:** Implement `WorkspaceSandboxExecutor.executeModification()` and `WorkspaceSandboxExecutor.executeVerification()`. These unified interfaces apply line edits and execute pre-approved testing constraints on the sandboxed branch, triggering immediate rollbacks if any individual action throws an exception.
 - **Module Scope:**
-  - _In Scope:_ Sanitizing strings against unsafe operators such as `;`, `&&`, `|`, `` ` ``, `$()`, and checking directory escape patterns (e.g., `..`).
-  - _Out of Scope:_ Actual shell subprocess spawning.
+  - _In Scope:_ Orchestrating sequential validation pipelines using `PatchExecutor` and `SafeCommandExecutor`, resolving task IDs, and capturing process execution outputs.
+  - _Out of Scope:_ Directly evaluating LLM prompts or managing conversational history objects.
+- **Dependencies:**
+  - _Blocked By:_ [TASK-03], [TASK-04], [TASK-07]
+  - _Blocks:_ [TASK-12]
+- **TDD Verification Spec:**
+  - _Unit Test Setup:_ Mock `PatchExecutor` and `SafeCommandExecutor`. Program the mock execution commands to simulate a failed compiler check (exit code non-zero).
+  - _Test Execution & Assertion:_ Call `WorkspaceSandboxExecutor.executeVerification("task-beta", "test-run", {})`. Ensure that upon receiving a failed compilation result, an exception is thrown to abort the sandbox transaction.
+
+---
+
+#### [TASK-09]: LLMOrchestrator Base States & Zero-Turn Initialization
+
+- **Description:** Implement `LLMOrchestrator.generateNextTurn()`. Formulate prompt templates, integrate the LLM driver interface (Vercel AI SDK wrapper), and enforce state rules where empty turn requests inject the initial goal directly into the active prompt window.
+- **Module Scope:**
+  - _In Scope:_ Mapping system messages, structuring input arrays, verifying empty turn sequences, and packaging outputs into the uniform response shape `LLMTurnResult`.
+  - _Out of Scope:_ Performing message pruning or tracking run loops.
 - **Dependencies:**
   - _Blocked By:_ None
-  - _Blocks:_ [TASK-09]
+  - _Blocks:_ [TASK-10]
 - **TDD Verification Spec:**
-  - _Unit Test Setup:_ Define dynamic string variables containing injection patterns.
-  - _Test Execution & Assertion:_ Pass validation checks with `SafeCommandValidator.validateTargetPath("src/auth.test.ts")` (must pass). Pass invalid string `src/auth.test.ts; rm -rf /` (must throw `Invalid parameter path: shell metacharacter injection detected`).
+  - _Unit Test Setup:_ Mock the core Vercel AI SDK payload transport mechanisms.
+  - _Test Execution & Assertion:_ Call `LLMOrchestrator.generateNextTurn("Fix db connection", [])`. Assert that the array payload constructed for the downstream model includes at least one object mapping where `role === "user"` and `content === "Fix db connection"`.
 
 ---
 
-#### [TASK-09]: Parameterized Safe-Command Executor
+#### [TASK-10]: LLMOrchestrator Context Pruning Heuristics
 
-- **Description:** Execute predefined, parameterized system testing commands within a safe process sandbox, returning raw results or structured error trace payloads [REQ-04].
+- **Description:** Implement `LLMOrchestrator.pruneContext()`. Implement context-pruning rules that compress long transaction logs into a cohesive system summary text, ensuring the first user instruction is preserved and the last two active context turns are retained.
 - **Module Scope:**
-  - _In Scope:_ Mapping argument configurations to command templates (e.g., `npm run test -- {target}`) and handling process execution utilizing `child_process.execSync`.
-  - _Out of Scope:_ Standard Shell Command line expansions that bypass templates.
+  - _In Scope:_ Thread history compression, analyzing array indexes, and constructing summarization requests to shrink the active context history window.
+  - _Out of Scope:_ Parsing codebase patches or executing sandbox tests.
 - **Dependencies:**
-  - _Blocked By:_ [TASK-08]
-  - _Blocks:_ [TASK-16]
+  - _Blocked By:_ [TASK-09]
+  - _Blocks:_ [TASK-11]
 - **TDD Verification Spec:**
-  - _Unit Test Setup:_ Configure a safe test command template key inside code mocks.
-  - _Test Execution & Assertion:_ Run `SafeCommandExecutor.execute("test-cmd", "src/file.ts")`. Assert that the executed system command string matches the configuration target. Catch execution errors, verify that stderr flows are captured, and that they are wrapped in standardized XML-style compiler error blocks [REQ-05].
+  - _Unit Test Setup:_ Prepare a test context history array containing 20 sequential messages (10 interaction turns) where the initial entry represents the system instruction and task goal. Mock the LLM summarization response.
+  - _Test Execution & Assertion:_ Call `LLMOrchestrator.pruneContext(history)`. Assert that the returned pruned history contains the initial system instruction, the compressed summary block of historical entries, and the last two turns fully intact.
 
 ---
 
-#### [TASK-10]: Search-and-Replace Block Code Patching
+#### [TASK-11]: AgenticLoopStateMachine Iteration Controller
 
-- **Description:** Implement the code modification engine to apply structured, contextual search-and-replace alterations directly to target local workspace files [REQ-05].
+- **Description:** Implement `AgenticLoopStateMachine.executeLoop()`. Manage state transitions, integrate terminal spinners, track loop iterations, and monitor context limits using character-to-token heuristic ratios.
 - **Module Scope:**
-  - _In Scope:_ Locating exact multi-line text matches within target files, substituting them, and throwing precise exception payloads when exact matches are not resolved.
-  - _Out of Scope:_ Whole-file rewrite routines or structural AST generation parsing.
+  - _In Scope:_ Core tick execution loops, tracking loop run durations, parsing state transition blocks, and updating terminal indicator displays.
+  - _Out of Scope:_ Direct workspace sandbox integrations (to keep the state engine testable, the state transitions are validated via mock interfaces).
 - **Dependencies:**
-  - _Blocked By:_ None
-  - _Blocks:_ [TASK-16]
+  - _Blocked By:_ [TASK-02], [TASK-10]
+  - _Blocks:_ [TASK-12]
 - **TDD Verification Spec:**
-  - _Unit Test Setup:_ Write a mock target file containing structured sample lines.
-  - _Test Execution & Assertion:_ Invoke `PatchExecutor.applyPatch()` with parameters `find: "const y = 10;"`, `replace: "const y = 20;"`. Assert file matches expected output. Re-run task targeting a non-matching pattern, asserting it throws `Patch failed: Target match pattern not resolved in file`.
+  - _Unit Test Setup:_ Mock terminal spinner outputs and establish low loop limits (e.g., maximum 2 loops). Provide a mock executor that returns intermediate steps.
+  - _Test Execution & Assertion:_ Run `AgenticLoopStateMachine.executeLoop("task-gamma", "Build module")`. Verify that when execution passes configured iteration thresholds, the loop halts and returns a status payload reflecting a failure state due to loop count exhaustion.
 
 ---
 
-#### [TASK-11]: LLM Orchestration - Basic Tool Call and Next Turn Generator
+#### [TASK-12]: AgenticLoopStateMachine Integration & Workspace Coordination
 
-- **Description:** Implement the base integration wrapper for the Vercel AI SDK to query configured model engines, process chat logs, and interpret standard structured agent decisions.
+- **Description:** Connect `AgenticLoopStateMachine` with `WorkspaceSandboxExecutor` and `LLMOrchestrator`. Implement the complete autonomous execution lifecycle, translating suggested LLM actions into filesystem edits or test verifications, managing token threshold pruning alerts, and cleaning up sandbox branches on interrupts (SIGINT) or failures.
 - **Module Scope:**
-  - _In Scope:_ Transforming internal step states into LLM chat schemas, calling endpoint integrations, and mapping responses to structured `AgenticDecision` formats.
-  - _Out of Scope:_ Automatic rate-limit pauses or prompt-history summarization routines.
+  - _In Scope:_ Full end-to-end coordinating states, event triggers, context-pruning conditions, SIGINT signal handling, and workspace teardown actions.
+  - _Out of Scope:_ Arbitrary terminal shell access or writing custom filesystem changes outside of the configured patching tools.
 - **Dependencies:**
-  - _Blocked By:_ None
-  - _Blocks:_ [TASK-12], [TASK-13], [TASK-16]
+  - _Blocked By:_ [TASK-08], [TASK-11]
+  - _Blocks:_ None (Final system integration task)
 - **TDD Verification Spec:**
-  - _Unit Test Setup:_ Mock the underlying Vercel AI SDK network endpoint client.
-  - _Test Execution & Assertion:_ Execute `LLMOrchestrator.generateNextTurn("session-1", [], [])`. Assert the returned object matches the structure `{ type: "tool_call", toolCall: { id: "123", name: "read_file", args: {} } }` when simulated API outputs indicate tool actions.
-
----
-
-#### [TASK-12]: LLM Orchestration - Cooldown & Rate Limit Exponential Backoff
-
-- **Description:** Handle LLM rate limit responses (HTTP status `429`), extract target recovery details, log provider block durations, and execute backoff sleep delays [REQ-07].
-- **Module Scope:**
-  - _In Scope:_ Intercepting 429 response streams, parsing standard retry headers, and executing database cooldown updates.
-  - _Out of Scope:_ Actual runtime model queries (mocked).
-- **Dependencies:**
-  - _Blocked By:_ [TASK-04], [TASK-11]
-  - _Blocks:_ [TASK-16]
-- **TDD Verification Spec:**
-  - _Unit Test Setup:_ Configure a mocked API network layer designed to throw an HTTP 429 exception with a `retry-after: 1` header.
-  - _Test Execution & Assertion:_ Trigger `LLMOrchestrator.generateNextTurn()`. Assert that the orchestrator catches the exception, updates the provider cooldown state in the DB, registers a one-second pause delay, and then successfully retries the invocation.
-
----
-
-#### [TASK-13]: LLM Orchestration - Context Summarization & History Pruning
-
-- **Description:** Implement historical token control parameters to summarize system events that occurred more than 4 steps back [REQ-06].
-- **Module Scope:**
-  - _In Scope:_ Condensing historical record step elements into concise summaries using dedicated summarization prompts, keeping the last 2 actions in raw format.
-  - _Out of Scope:_ Local database pruning (only in-memory context manipulation).
-- **Dependencies:**
-  - _Blocked By:_ [TASK-03], [TASK-11]
-  - _Blocks:_ [TASK-16]
-- **TDD Verification Spec:**
-  - _Unit Test Setup:_ Build a history array composed of 5 detailed execution step structures. Mock the LLM summarization API response to return `"Summary of Step"`.
-  - _Test Execution & Assertion:_ Execute `LLMOrchestrator.pruneContext(history)`. Assert that the returned array length is reduced, with the first two records compressed to `"Summary of Step"`, while the final two steps preserve their detailed properties.
-
----
-
-#### [TASK-14]: Terminal Interface - Spinner and Visual Displays
-
-- **Description:** Setup terminal screen presentation controls using `@clack/prompts` to deliver non-blocking loading spinners and structured output layouts.
-- **Module Scope:**
-  - _In Scope:_ Wrapping `@clack/prompts` indicators, color management, and standard output streaming hooks.
-  - _Out of Scope:_ User interactive prompt answers or custom rendering structures.
-- **Dependencies:**
-  - _Blocked By:_ None
-  - _Blocks:_ [TASK-15]
-- **TDD Verification Spec:**
-  - _Unit Test Setup:_ Spy on standard outputs (`process.stdout.write`).
-  - _Test Execution & Assertion:_ Execute `TerminalInterface.showSpinner("Saving Workspace Status...")`. Assert that the appropriate ANSI sequences and text instructions are written to standard output.
-
----
-
-#### [TASK-15]: Terminal Interface - Approvals & Diff Rendering
-
-- **Description:** Implement interactive console prompting routines and formatted Git diff blocks within the terminal layout.
-- **Module Scope:**
-  - _In Scope:_ Interactive prompt responses (such as `[Y/n]` inputs) and styled block diff renders using standard ANSI highlights.
-  - _Out of Scope:_ File path calculations or actual Git branch creation.
-- **Dependencies:**
-  - _Blocked By:_ [TASK-14]
-  - _Blocks:_ [TASK-16]
-- **TDD Verification Spec:**
-  - _Unit Test Setup:_ Mock standard interactive terminal input streams (`process.stdin`).
-  - _Test Execution & Assertion:_ Trigger `TerminalInterface.requestUserApproval("Do you authorize this execution?")`. Feed simulated input values representing `"Y"` and `"n"`. Assert that the resolved promise returns `true` and `false` respectively.
-
----
-
-#### [TASK-16]: Agentic Loop State Machine - Core State Orchestration
-
-- **Description:** Build the core state driver class to coordinate processing steps, evaluate tool requests, execute local targets, and update log registries [REQ-01].
-- **Module Scope:**
-  - _In Scope:_ Transitioning execution sequences through planning, approval evaluation, safe-tool runs, and tracking results.
-  - _Out of Scope:_ Execution boundary steps or process signal capturing.
-- **Dependencies:**
-  - _Blocked By:_ [TASK-03], [TASK-07], [TASK-09], [TASK-10], [TASK-11], [TASK-15]
-  - _Blocks:_ [TASK-17]
-- **TDD Verification Spec:**
-  - _Unit Test Setup:_ Mock the `LLMOrchestrator`, `SandboxExecutor`, and `SQLiteStorageManager`. Configure the mock model to return a tool run request on step 1, and return a completed state representation on step 2.
-  - _Test Execution & Assertion:_ Invoke `AgenticLoopStateMachine.start("Refactor login verification system")`. Assert that storage manager tracking files register both execution iterations, and that the target sandbox modifications execute as defined.
-
----
-
-#### [TASK-17]: Agentic Loop State Machine - Step Limit Enforcement
-
-- **Description:** Integrate step limit boundaries within the loop control routines to guard against runaway executions [REQ-02].
-- **Module Scope:**
-  - _In Scope:_ Monitoring consecutive loop iteration counters and throwing terminating exceptions if bounds are exceeded.
-  - _Out of Scope:_ General execution loop state logic.
-- **Dependencies:**
-  - _Blocked By:_ [TASK-16]
-  - _Blocks:_ [TASK-18]
-- **TDD Verification Spec:**
-  - _Unit Test Setup:_ Configure the maximum loop execution bounds constraint to `3`. Set up a mocked LLM driver designed to continuously issue read operations.
-  - _Test Execution & Assertion:_ Call `AgenticLoopStateMachine.start("Audit code base patterns")`. Confirm that execution stops at step 3, and assert that the loop throws an execution error containing: `"Step Limit limit of 3 reached. Terminating loop to prevent runaway behavior"`.
-
----
-
-#### [TASK-18]: Process Interrupt Handling & Cleanup
-
-- **Description:** Capture system SIGINT (`Ctrl+C`) actions, cleanly persist current execution steps to the database, and display sandbox environment recovery prompts.
-- **Module Scope:**
-  - _In Scope:_ Capturing SIGINT, writing current step state data, prompting for manual sandbox retention, and returning the active terminal branch to its clean, pre-session state.
-  - _Out of Scope:_ Standard exit procedures during normal, error-free completions.
-- **Dependencies:**
-  - _Blocked By:_ [TASK-17]
-  - _Blocks:_ [TASK-19]
-- **TDD Verification Spec:**
-  - _Unit Test Setup:_ Spy on the database save procedures and mock user selection prompts to return `false` (discard branch).
-  - _Test Execution & Assertion:_ Run a long-running execution mock and simulate a `process.emit('SIGINT')` signal. Assert that active step data is saved, the user prompt is displayed, and standard restoration cleanup commands (`restoreOriginalBranch`) are invoked.
-
----
-
-#### [TASK-19]: CLI Runtime Hook Commands (`nexus init`, `nexus run`)
-
-- **Description:** Establish the primary binary entry points mapping global console runtime parameters to initialization routines and execution states.
-- **Module Scope:**
-  - _In Scope:_ Wiring `nexus init` to trigger setup targets, and mapping `nexus run "<prompt>"` to prompt the state machine.
-  - _Out of Scope:_ Internal state transition logic (delegated entirely to the modules).
-- **Dependencies:**
-  - _Blocked By:_ [TASK-01], [TASK-18]
-  - _Blocks:_ None
-- **TDD Verification Spec:**
-  - _Unit Test Setup:_ Mock the command-line argument array (`process.argv`).
-  - _Test Execution & Assertion:_ Pass CLI parameters `["node", "nexus", "init"]`. Assert that the configuration files generate as expected. Pass `["node", "nexus", "run", "Fix bug"]` and verify that the core `AgenticLoopStateMachine` starts correctly.
+  - _Unit Test Setup:_ Mock the LLM orchestrator to suggest a patch change and a subsequent verification command. Mock the workspace executor to simulate successful operations.
+  - _Test Execution & Assertion:_ Execute the full state loop. Verify that the system executes the patch, runs the verification suite, commits the changes on success, and returns a `complete` status summary. Simulate a SIGINT event during execution to verify that rollback procedures are executed and the original developer workspace is restored.
