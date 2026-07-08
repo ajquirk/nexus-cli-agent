@@ -15,6 +15,13 @@ export interface PatchExecutorOptions {
   fs?: FileSystemInterface;
 }
 
+export class AmbiguousPatchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AmbiguousPatchError";
+  }
+}
+
 const defaultFs: FileSystemInterface = {
   async readFile(path: string, encoding: "utf8"): Promise<string> {
     return fsPromises.readFile(path, { encoding });
@@ -38,6 +45,7 @@ export class PatchExecutor {
   /**
    * Applies a contextual search-and-replace block directly to the target file.
    * Throws if the exact find pattern is not resolved or is not line-boundary aligned.
+   * Throws an AmbiguousPatchError if multiple line-aligned matches are found.
    */
   async applyPatch(block: SearchReplaceBlock): Promise<void> {
     const originalContent = await this.fs.readFile(block.filePath, "utf8");
@@ -50,10 +58,10 @@ export class PatchExecutor {
     const normalizedFind = block.find.replace(/\r\n/g, "\n");
     const normalizedReplace = block.replace.replace(/\r\n/g, "\n");
 
+    const matchedIndices: number[] = [];
     let searchStartIndex = 0;
-    let foundMatchIndex = -1;
 
-    // Scan for line-aligned occurrences
+    // Scan for all line-aligned occurrences
     while (true) {
       const currentIndex = normalizedContent.indexOf(
         normalizedFind,
@@ -76,19 +84,26 @@ export class PatchExecutor {
         normalizedContent[currentIndex + normalizedFind.length] === "\n";
 
       if (isBeforeAligned && isAfterAligned) {
-        foundMatchIndex = currentIndex;
-        break;
+        matchedIndices.push(currentIndex);
       }
 
       // Increment search cursor to check other potential matches
       searchStartIndex = currentIndex + 1;
     }
 
-    if (foundMatchIndex === -1) {
+    if (matchedIndices.length === 0) {
       throw new Error(
         "Patch failed: Target match pattern not resolved in file",
       );
     }
+
+    if (matchedIndices.length > 1) {
+      throw new AmbiguousPatchError(
+        `Patch failed: Multiple matches were identified in file. Found ${matchedIndices.length} occurrences of target match pattern.`,
+      );
+    }
+
+    const foundMatchIndex = matchedIndices[0];
 
     // Splice in the replacement
     const patchedNormalized =

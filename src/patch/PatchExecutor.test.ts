@@ -3,6 +3,7 @@ import {
   PatchExecutor,
   FileSystemInterface,
   SearchReplaceBlock,
+  AmbiguousPatchError,
 } from "./PatchExecutor.js";
 
 describe("PatchExecutor", () => {
@@ -165,6 +166,66 @@ describe("PatchExecutor", () => {
 
       await expect(executor.applyPatch(block)).rejects.toThrow(
         /ENOENT: no such file or directory/,
+      );
+    });
+
+    it("should throw an AmbiguousPatchError when there are duplicate line-aligned matches", async () => {
+      const filePath = "src/duplicate.ts";
+      fileStore[filePath] = "const x = 1;\nconsole.log(x);\nconst x = 1;";
+
+      const block: SearchReplaceBlock = {
+        filePath,
+        find: "const x = 1;",
+        replace: "const x = 2;",
+      };
+
+      await expect(executor.applyPatch(block)).rejects.toThrow(
+        AmbiguousPatchError,
+      );
+      await expect(executor.applyPatch(block)).rejects.toThrow(
+        /multiple matches were identified/i,
+      );
+
+      // Verify the file was not modified
+      expect(fileStore[filePath]).toBe(
+        "const x = 1;\nconsole.log(x);\nconst x = 1;",
+      );
+      expect(mockFs.writeFile).not.toHaveBeenCalled();
+    });
+
+    it("should throw AmbiguousPatchError when duplicate multi-line blocks are found", async () => {
+      const filePath = "src/duplicate_multiline.ts";
+      fileStore[filePath] = [
+        "function duplicate() {",
+        "  return true;",
+        "}",
+        "console.log('middle');",
+        "function duplicate() {",
+        "  return true;",
+        "}",
+      ].join("\n");
+
+      const block: SearchReplaceBlock = {
+        filePath,
+        find: ["function duplicate() {", "  return true;", "}"].join("\n"),
+        replace: ["function duplicate() {", "  return false;", "}"].join("\n"),
+      };
+
+      await expect(executor.applyPatch(block)).rejects.toThrow(
+        AmbiguousPatchError,
+      );
+
+      // Verify file was not modified
+      expect(fileStore[filePath]).toBe(
+        [
+          "function duplicate() {",
+          "  return true;",
+          "}",
+          "console.log('middle');",
+          "function duplicate() {",
+          "  return true;",
+          "}",
+        ].join("\n"),
       );
     });
   });
