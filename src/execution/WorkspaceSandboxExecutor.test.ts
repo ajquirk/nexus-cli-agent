@@ -111,22 +111,24 @@ describe("WorkspaceSandboxExecutor", () => {
     });
   });
 
-  describe("executeModification & executeVerification", () => {
-    it("should delegate execution of file modifications directly to PatchExecutor", async () => {
+  describe("executeModification & executeVerification (Standard Operations)", () => {
+    it("should delegate execution of file modifications directly to PatchExecutor if initialized", async () => {
       const dummyPatch: SearchReplacePatch = {
         filePath: "src/test.ts",
         find: "const x = 1;",
         replace: "const x = 2;",
       };
 
+      await executor.initializeWorkspace("task-beta");
       await executor.executeModification("task-beta", dummyPatch);
 
       expect(patchExecutor.applyPatch).toHaveBeenCalledWith(dummyPatch);
       expect(patchExecutor.applyPatch).toHaveBeenCalledTimes(1);
     });
 
-    it("should delegate execution of safe command verifications directly to SafeCommandExecutor", async () => {
+    it("should delegate execution of safe command verifications directly to SafeCommandExecutor if initialized", async () => {
       const variables = { target: "src/test.ts" };
+      await executor.initializeWorkspace("task-beta");
       const result = await executor.executeVerification(
         "task-beta",
         "npm-test",
@@ -143,6 +145,107 @@ describe("WorkspaceSandboxExecutor", () => {
         stderr: "",
         exitCode: 0,
       });
+    });
+  });
+
+  describe("executeModification & executeVerification (Transactional Guardrails)", () => {
+    const dummyPatch: SearchReplacePatch = {
+      filePath: "src/test.ts",
+      find: "const x = 1;",
+      replace: "const x = 2;",
+    };
+
+    it("should prevent execution of modifications if the workspace is not initialized", async () => {
+      await expect(
+        executor.executeModification("task-beta", dummyPatch),
+      ).rejects.toThrow(/Transaction not active for task: task-beta/);
+
+      expect(patchExecutor.applyPatch).not.toHaveBeenCalled();
+    });
+
+    it("should prevent execution of verifications if the workspace is not initialized", async () => {
+      await expect(
+        executor.executeVerification("task-beta", "npm-test", {}),
+      ).rejects.toThrow(/Transaction not active for task: task-beta/);
+
+      expect(safeCommandExecutor.executeCommand).not.toHaveBeenCalled();
+    });
+
+    it("should trigger immediate rollback and rethrow if PatchExecutor throws an error", async () => {
+      vi.mocked(patchExecutor.applyPatch).mockRejectedValueOnce(
+        new Error("Patch failed to apply"),
+      );
+
+      await executor.initializeWorkspace("task-beta");
+
+      await expect(
+        executor.executeModification("task-beta", dummyPatch),
+      ).rejects.toThrow("Patch failed to apply");
+
+      // Rollback should be invoked
+      expect(sandboxBranchManager.restoreOriginalBranch).toHaveBeenCalledWith(
+        "task-beta",
+      );
+      expect(sandboxBranchManager.restoreOriginalBranch).toHaveBeenCalledTimes(
+        1,
+      );
+
+      // Task must be removed from active tracking on rollback
+      await expect(
+        executor.initializeWorkspace("task-beta"),
+      ).resolves.toBeUndefined();
+    });
+
+    it("should trigger immediate rollback and throw error if verification returns a non-zero exit code", async () => {
+      vi.mocked(safeCommandExecutor.executeCommand).mockResolvedValueOnce({
+        stdout: "",
+        stderr: "Compile Error: Undefined variable",
+        exitCode: 1,
+      });
+
+      await executor.initializeWorkspace("task-beta");
+
+      await expect(
+        executor.executeVerification("task-beta", "npm-test", {}),
+      ).rejects.toThrow(/Verification command failed with exit code 1/);
+
+      // Rollback should be invoked
+      expect(sandboxBranchManager.restoreOriginalBranch).toHaveBeenCalledWith(
+        "task-beta",
+      );
+      expect(sandboxBranchManager.restoreOriginalBranch).toHaveBeenCalledTimes(
+        1,
+      );
+
+      // Task must be removed from active tracking on rollback
+      await expect(
+        executor.initializeWorkspace("task-beta"),
+      ).resolves.toBeUndefined();
+    });
+
+    it("should trigger immediate rollback and rethrow if SafeCommandExecutor rejects", async () => {
+      vi.mocked(safeCommandExecutor.executeCommand).mockRejectedValueOnce(
+        new Error("Process spawn failure"),
+      );
+
+      await executor.initializeWorkspace("task-beta");
+
+      await expect(
+        executor.executeVerification("task-beta", "npm-test", {}),
+      ).rejects.toThrow("Process spawn failure");
+
+      // Rollback should be invoked
+      expect(sandboxBranchManager.restoreOriginalBranch).toHaveBeenCalledWith(
+        "task-beta",
+      );
+      expect(sandboxBranchManager.restoreOriginalBranch).toHaveBeenCalledTimes(
+        1,
+      );
+
+      // Task must be removed from active tracking on rollback
+      await expect(
+        executor.initializeWorkspace("task-beta"),
+      ).resolves.toBeUndefined();
     });
   });
 });

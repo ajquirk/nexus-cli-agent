@@ -48,26 +48,61 @@ export class WorkspaceSandboxExecutor {
 
   /**
    * Delegates file modification (patching) to the underlying PatchExecutor.
+   * If patching fails, triggers an automatic rollback of the workspace state.
    */
   public async executeModification(
     taskId: string,
     patch: SearchReplacePatch,
   ): Promise<void> {
-    await this.options.patchExecutor.applyPatch(patch);
+    if (!this.activeTasks.has(taskId)) {
+      throw new Error(`Transaction not active for task: ${taskId}`);
+    }
+
+    try {
+      await this.options.patchExecutor.applyPatch(patch);
+    } catch (error) {
+      try {
+        await this.finalizeWorkspace(taskId, false);
+      } catch (rollbackError) {
+        // Suppress secondary rollback failures to preserve primary error
+      }
+      throw error;
+    }
   }
 
   /**
    * Delegates command-line verification suites to the SafeCommandExecutor.
+   * Verifies that the check completed successfully (exitCode: 0). If exitCode
+   * is non-zero, throws an error and triggers an automatic rollback.
    */
   public async executeVerification(
     taskId: string,
     templateKey: string,
     variables: Record<string, string>,
   ): Promise<CommandExecutionResult> {
-    return this.options.safeCommandExecutor.executeCommand(
-      templateKey,
-      variables,
-    );
+    if (!this.activeTasks.has(taskId)) {
+      throw new Error(`Transaction not active for task: ${taskId}`);
+    }
+
+    try {
+      const result = await this.options.safeCommandExecutor.executeCommand(
+        templateKey,
+        variables,
+      );
+      if (result.exitCode !== 0) {
+        throw new Error(
+          `Verification command failed with exit code ${result.exitCode}`,
+        );
+      }
+      return result;
+    } catch (error) {
+      try {
+        await this.finalizeWorkspace(taskId, false);
+      } catch (rollbackError) {
+        // Suppress secondary rollback failures to preserve primary error
+      }
+      throw error;
+    }
   }
 
   /**
