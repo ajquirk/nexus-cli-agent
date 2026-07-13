@@ -46,7 +46,9 @@ nexus
 │ │ ├── SafeCommandExecutor.test.ts
 │ │ ├── SafeCommandExecutor.ts
 │ │ ├── SafeCommandValidator.test.ts
-│ │ └── SafeCommandValidator.ts
+│ │ ├── SafeCommandValidator.ts
+│ │ ├── WorkspaceSandboxExecutor.test.ts
+│ │ └── WorkspaceSandboxExecutor.ts
 │ ├── git
 │ │ ├── GitValidator.test.ts
 │ │ ├── GitValidator.ts
