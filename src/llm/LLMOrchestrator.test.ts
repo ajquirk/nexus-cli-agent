@@ -4,6 +4,7 @@ import {
   VercelLLMOrchestrator,
   StepRecord,
   ToolSpec,
+  ChatMessage,
 } from "./LLMOrchestrator.js";
 import { generateText, LanguageModel } from "ai";
 import { SQLiteStorageManager } from "../storage/SQLiteStorageManager.js";
@@ -212,5 +213,144 @@ describe("LLMOrchestrator.pruneContext", () => {
     expect(pruned).toHaveLength(4);
     expect(pruned[0].stdoutSummary).toContain("Automatic summary");
     expect(pruned[1].stdoutSummary).toContain("Automatic summary");
+  });
+});
+
+describe("VercelLLMOrchestrator PRD Turn Generation (TASK-09)", () => {
+  let mockStorageManager: any;
+  let mockSleep: any;
+  const dummyModel = {} as LanguageModel;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSleep = vi.fn().mockResolvedValue(undefined);
+    mockStorageManager = {
+      getRateLimitCooldown: vi.fn().mockResolvedValue(null),
+      logRateLimitCooldown: vi.fn().mockResolvedValue(undefined),
+    };
+  });
+
+  it("should inject the initial prompt as user message when history is empty (REQ-05)", async () => {
+    vi.mocked(generateText).mockResolvedValue({
+      text: JSON.stringify({
+        thought: "Analyzing the empty state task.",
+        suggestedAction: {
+          type: "patch",
+          payload: {
+            filePath: "src/db.ts",
+            find: "timeout: 1000",
+            replace: "timeout: 5000",
+          },
+        },
+        isTerminal: false,
+      }),
+    } as any);
+
+    const orchestrator = new VercelLLMOrchestrator({
+      model: dummyModel,
+    });
+
+    const result = await orchestrator.generateNextTurn(
+      "Refactor users database controller",
+      [],
+    );
+
+    expect(generateText).toHaveBeenCalled();
+    const calls = vi.mocked(generateText).mock.calls;
+    const lastCallArgs = calls[calls.length - 1][0] as any;
+
+    expect(lastCallArgs.messages).toBeDefined();
+    const messages = lastCallArgs.messages as any[];
+    const firstMsg = messages[0];
+    expect(firstMsg).toEqual({
+      role: "user",
+      content: "Refactor users database controller",
+    });
+
+    expect(result.thought).toBe("Analyzing the empty state task.");
+    expect(result.suggestedAction).toEqual({
+      type: "patch",
+      payload: {
+        filePath: "src/db.ts",
+        find: "timeout: 1000",
+        replace: "timeout: 5000",
+      },
+    });
+    expect(result.isTerminal).toBe(false);
+  });
+
+  it("should preserve and transmit the existing ChatHistory list when not empty", async () => {
+    vi.mocked(generateText).mockResolvedValue({
+      text: JSON.stringify({
+        thought: "Moving to next step.",
+        isTerminal: true,
+      }),
+    } as any);
+
+    const orchestrator = new VercelLLMOrchestrator({
+      model: dummyModel,
+    });
+
+    const history: ChatMessage[] = [
+      { role: "user", content: "Implement unique constraint on email" },
+      {
+        role: "assistant",
+        content: JSON.stringify({
+          thought: "Applying index",
+          isTerminal: false,
+        }),
+      },
+    ];
+
+    await orchestrator.generateNextTurn(
+      "Implement unique constraint on email",
+      history,
+    );
+
+    expect(generateText).toHaveBeenCalled();
+    const calls = vi.mocked(generateText).mock.calls;
+    const lastCallArgs = calls[calls.length - 1][0] as any;
+
+    expect(lastCallArgs.messages).toBeDefined();
+    const messages = lastCallArgs.messages as any[];
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toEqual({
+      role: "user",
+      content: "Implement unique constraint on email",
+    });
+    expect(messages[1].role).toBe("assistant");
+  });
+
+  it("should reliably parse structured JSON wrapped in markdown blocks", async () => {
+    vi.mocked(generateText).mockResolvedValue({
+      text: '```json\n{\n  "thought": "Parsing markdown JSON success",\n  "isTerminal": true\n}\n```',
+    } as any);
+
+    const orchestrator = new VercelLLMOrchestrator({
+      model: dummyModel,
+    });
+
+    const result = await orchestrator.generateNextTurn("Do task", []);
+    expect(result).toEqual({
+      thought: "Parsing markdown JSON success",
+      isTerminal: true,
+    });
+  });
+
+  it("should fall back gracefully to treating raw text response as thought when JSON parsing fails", async () => {
+    vi.mocked(generateText).mockResolvedValue({
+      text: "I have successfully refactored the database code and ran all tests manually.",
+    } as any);
+
+    const orchestrator = new VercelLLMOrchestrator({
+      model: dummyModel,
+    });
+
+    const result = await orchestrator.generateNextTurn("Do task", []);
+    expect(result.thought).toBe(
+      "I have successfully refactored the database code and ran all tests manually.",
+    );
+    expect(result.isTerminal).toBe(false);
+    expect(result.suggestedAction).toBeUndefined();
   });
 });

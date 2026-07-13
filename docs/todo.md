@@ -179,3 +179,19 @@ The current implementation is robust and conforms to all functional requirements
   The findOriginalBranch and popStashForTask methods currently match the task ID strictly using regexes over the text registers of git outputs. If needed, the taskId parameter format can be sanitized or validated to confirm it does not contain shell-breaking metadata, though shell-less process spawning (execFileSync) already mitigates standard process injection vectors.
 - Logging Interceptor:
   For debugging execution flows in dry run situations, we could introduce an optional logger interface into SandboxBranchManagerOptions. This would allow logging the checked-out branch, the stashed changesets, and git cleanup steps without impacting the core production logging behavior.
+
+---
+
+### TASK 09
+
+#### Refactoring Recommendations
+
+Should you wish to refine this module further, we recommend the following additive adjustment:
+
+- **Consolidate Rate-Limiting & Retry Logic:** The rate-limiting checks and exponential backoff/cooldown mechanisms are currently duplicated across both overload paths. We could extract this wrapper logic into a private helper method within `VercelLLMOrchestrator`:
+  ```typescript
+  private async executeWithRetryAndCooldown<T>(
+    apiCall: () => Promise<T>
+  ): Promise<T | { error: string }>
+  ```
+  This extraction would reduce duplicate code while keeping the public interface signature identical.
