@@ -3,15 +3,16 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   AgenticLoopStateMachine,
   SandboxExecutor,
+  LoopCompletionStatus,
 } from "./AgenticLoopStateMachine.js";
-import {
-  SQLiteStorageManager,
-  StepRecord,
-} from "../storage/SQLiteStorageManager.js";
+import { SQLiteStorageManager } from "../storage/SQLiteStorageManager.js";
 import {
   LLMOrchestrator,
   ToolSpec,
   AgenticDecision,
+  StepRecord,
+  ChatMessage,
+  LLMTurnResult,
 } from "../llm/LLMOrchestrator.js";
 import { TerminalInterface } from "../terminal/TerminalInterface.js";
 
@@ -41,6 +42,15 @@ describe("AgenticLoopStateMachine", () => {
     // 2. Mock LLMOrchestrator
     mockOrchestrator = {
       generateNextTurn: vi.fn(),
+      pruneContext: vi
+        .fn()
+        .mockImplementation(async (history: ChatMessage[]) => {
+          // Mock pruning behavior: keep system prompt, first task prompt, and compress middle
+          return [
+            { role: "system", content: "System updated summary" },
+            ...history.slice(history.length - 2),
+          ];
+        }),
     } as unknown as LLMOrchestrator;
 
     // 3. Mock SandboxExecutor
@@ -62,11 +72,10 @@ describe("AgenticLoopStateMachine", () => {
     };
   });
 
+  // --- EXISTING TESTS (REPAIRED & CLEANLY PRESERVED) ---
+
   it("should complete a multi-step execution loop, executing a patch and merging the branch", async () => {
-    // Setup two-turn execution
-    // Turn 1: tool call (apply_patch)
-    // Turn 2: completion message
-    vi.mocked(mockOrchestrator.generateNextTurn)
+    vi.mocked(mockOrchestrator.generateNextTurn as any)
       .mockResolvedValueOnce({
         type: "tool_call",
         toolCall: {
@@ -94,16 +103,9 @@ describe("AgenticLoopStateMachine", () => {
 
     await stateMachine.start("Refactor login verification system");
 
-    // Database is initialized
     expect(mockStorageManager.initializeDatabase).toHaveBeenCalled();
-
-    // Sandbox branch created
     expect(mockSandboxExecutor.applySandboxBranch).toHaveBeenCalled();
-
-    // Step 1: LLM turn generated
     expect(mockOrchestrator.generateNextTurn).toHaveBeenCalledTimes(2);
-
-    // Sandbox code patch was applied
     expect(mockSandboxExecutor.applyCodePatch).toHaveBeenCalledWith(
       "src/auth.ts",
       {
@@ -112,18 +114,13 @@ describe("AgenticLoopStateMachine", () => {
         replace: "function secureAuth() {}",
       },
     );
-
-    // Step state tracked to SQLite log registries
     expect(mockStorageManager.saveStep).toHaveBeenCalledTimes(2);
-
-    // Merged changes on success and didn't restore
     expect(mockSandboxExecutor.mergeSandboxBranch).toHaveBeenCalled();
     expect(mockSandboxExecutor.restoreOriginalBranch).not.toHaveBeenCalled();
   });
 
   it("should enforce the step limit, reverting any workspace changes and throwing an error", async () => {
-    // Set step limit to 1, but model wants to call tool on turn 1, and complete on turn 2
-    vi.mocked(mockOrchestrator.generateNextTurn)
+    vi.mocked(mockOrchestrator.generateNextTurn as any)
       .mockResolvedValueOnce({
         type: "tool_call",
         toolCall: {
@@ -145,24 +142,20 @@ describe("AgenticLoopStateMachine", () => {
       orchestrator: mockOrchestrator,
       sandboxExecutor: mockSandboxExecutor,
       terminalInterface: mockTerminalInterface,
-      stepLimit: 1, // Strict step limit
+      stepLimit: 1,
     });
 
-    // We expect start to throw/reject because of the step limit breach
     await expect(stateMachine.start("Run local tests")).rejects.toThrow(
       "Step Limit limit of 1 reached. Terminating loop to prevent runaway behavior",
     );
 
-    // The single execution step is run and saved, but second step triggers boundary failure
     expect(mockStorageManager.saveStep).toHaveBeenCalledTimes(1);
-
-    // Reverted workspace modifications
     expect(mockSandboxExecutor.restoreOriginalBranch).toHaveBeenCalled();
     expect(mockSandboxExecutor.mergeSandboxBranch).not.toHaveBeenCalled();
   });
 
   it("should abort and restore the original branch when the model signals a loop failure", async () => {
-    vi.mocked(mockOrchestrator.generateNextTurn).mockResolvedValueOnce({
+    vi.mocked(mockOrchestrator.generateNextTurn as any).mockResolvedValueOnce({
       type: "fail",
       message: "Model unable to proceed with task context.",
     });
@@ -184,7 +177,7 @@ describe("AgenticLoopStateMachine", () => {
   });
 
   it("should rollback to the original branch if a critical execution step throws", async () => {
-    vi.mocked(mockOrchestrator.generateNextTurn).mockResolvedValueOnce({
+    vi.mocked(mockOrchestrator.generateNextTurn as any).mockResolvedValueOnce({
       type: "tool_call",
       toolCall: {
         id: "call-fail",
@@ -197,7 +190,6 @@ describe("AgenticLoopStateMachine", () => {
       },
     });
 
-    // Code patch throws a filesystem exception
     vi.mocked(mockSandboxExecutor.applyCodePatch).mockRejectedValueOnce(
       new Error("Filesystem write failure"),
     );
@@ -214,14 +206,12 @@ describe("AgenticLoopStateMachine", () => {
       "Filesystem write failure",
     );
 
-    // Changes stashed/cleaned up
     expect(mockSandboxExecutor.restoreOriginalBranch).toHaveBeenCalled();
     expect(mockSandboxExecutor.mergeSandboxBranch).not.toHaveBeenCalled();
   });
 
   it("should stop execution at exactly step 3 and throw runaway error when stepLimit is 3", async () => {
-    // Set up a mocked LLM driver designed to continuously issue operations
-    vi.mocked(mockOrchestrator.generateNextTurn).mockResolvedValue({
+    vi.mocked(mockOrchestrator.generateNextTurn as any).mockResolvedValue({
       type: "tool_call",
       toolCall: {
         id: "call-runaway",
@@ -247,18 +237,12 @@ describe("AgenticLoopStateMachine", () => {
       "Step Limit limit of 3 reached. Terminating loop to prevent runaway behavior",
     );
 
-    // Confirm that orchestrator generated exactly 3 turns
     expect(mockOrchestrator.generateNextTurn).toHaveBeenCalledTimes(3);
-
-    // Assert that 3 tool records were logged into SQLite storage
     expect(mockStorageManager.saveStep).toHaveBeenCalledTimes(3);
-
-    // Verify workspace was cleaned up on runaway error
     expect(mockSandboxExecutor.restoreOriginalBranch).toHaveBeenCalled();
     expect(mockSandboxExecutor.mergeSandboxBranch).not.toHaveBeenCalled();
   });
 
-  // --- TASK-18 Interrupt Handling & Cleanup Tests ---
   describe("Process Interrupt Handling & Cleanup (TASK-18)", () => {
     let initialListenerCount: number;
 
@@ -267,13 +251,11 @@ describe("AgenticLoopStateMachine", () => {
     });
 
     afterEach(() => {
-      // Ensure that we do not leak any registered SIGINT listeners to the test runner environment
       expect(process.listenerCount("SIGINT")).toBe(initialListenerCount);
       vi.restoreAllMocks();
     });
 
     it("should capture SIGINT, save interrupt log, ask user, restore branch when user declines retention, and reject", async () => {
-      // Mock user selection to return false (discard sandbox branch modifications)
       vi.mocked(mockTerminalInterface.requestUserApproval).mockResolvedValue(
         false,
       );
@@ -285,7 +267,7 @@ describe("AgenticLoopStateMachine", () => {
         };
       });
 
-      vi.mocked(mockOrchestrator.generateNextTurn).mockReturnValue(
+      vi.mocked(mockOrchestrator.generateNextTurn as any).mockReturnValue(
         longRunningPromise,
       );
 
@@ -298,7 +280,6 @@ describe("AgenticLoopStateMachine", () => {
 
       const startPromise = stateMachine.start("Interrupt task demonstration");
 
-      // Give control back to event loop so AgenticLoop registers the SIGINT listener
       await new Promise((resolve) => setTimeout(resolve, 0));
       triggerSigint();
 
@@ -306,7 +287,6 @@ describe("AgenticLoopStateMachine", () => {
         "Execution interrupted by user (SIGINT)",
       );
 
-      // Assert that execution step log is saved cleanly to SQLite write-ahead log
       expect(mockStorageManager.saveStep).toHaveBeenCalled();
       const saveCalls = vi.mocked(mockStorageManager.saveStep).mock.calls;
       expect(saveCalls.length).toBeGreaterThanOrEqual(1);
@@ -315,17 +295,14 @@ describe("AgenticLoopStateMachine", () => {
       expect(savedRecord.toolName).toBe("sigint_interrupt");
       expect(savedRecord.stdoutSummary).toContain("SIGINT");
 
-      // Assert that interactive terminal prompt was issued
       expect(mockTerminalInterface.requestUserApproval).toHaveBeenCalledWith(
         expect.stringContaining("Do you want to retain the sandbox branch"),
       );
 
-      // Verify that workspace branch recovery is triggered
       expect(mockSandboxExecutor.restoreOriginalBranch).toHaveBeenCalled();
     });
 
     it("should capture SIGINT, save log, ask user, and NOT restore branch when user accepts retention, and reject", async () => {
-      // Mock user selection to return true (retain experimental sandbox branch changes)
       vi.mocked(mockTerminalInterface.requestUserApproval).mockResolvedValue(
         true,
       );
@@ -337,7 +314,7 @@ describe("AgenticLoopStateMachine", () => {
         };
       });
 
-      vi.mocked(mockOrchestrator.generateNextTurn).mockReturnValue(
+      vi.mocked(mockOrchestrator.generateNextTurn as any).mockReturnValue(
         longRunningPromise,
       );
 
@@ -361,13 +338,11 @@ describe("AgenticLoopStateMachine", () => {
 
       expect(mockStorageManager.saveStep).toHaveBeenCalled();
       expect(mockTerminalInterface.requestUserApproval).toHaveBeenCalled();
-
-      // Since developer elected to retain sandbox branch, skip restore cleanup
       expect(mockSandboxExecutor.restoreOriginalBranch).not.toHaveBeenCalled();
     });
 
     it("should cleanly remove SIGINT listener upon normal completion of the loop", async () => {
-      vi.mocked(mockOrchestrator.generateNextTurn).mockResolvedValue({
+      vi.mocked(mockOrchestrator.generateNextTurn as any).mockResolvedValue({
         type: "complete",
         message: "Execution resolved successfully.",
       });
@@ -386,7 +361,264 @@ describe("AgenticLoopStateMachine", () => {
         vi.mocked(mockStorageManager.saveStep).mock.calls[0][2].toolName,
       ).toBe("complete");
       expect(mockSandboxExecutor.restoreOriginalBranch).not.toHaveBeenCalled();
-      // Lifecycle listener cleanup is evaluated and asserted inside afterEach
+    });
+  });
+
+  // --- NEW [TASK-11] SPECIFIC executeLoop TESTS ---
+
+  describe("executeLoop (TASK-11 Specific)", () => {
+    it("should execute a clean loop path and succeed immediately when isTerminal is true", async () => {
+      vi.mocked(mockOrchestrator.generateNextTurn as any).mockResolvedValueOnce(
+        {
+          thought: "I have successfully verified the workspace requirements.",
+          isTerminal: true,
+        } as LLMTurnResult,
+      );
+
+      const stateMachine = new AgenticLoopStateMachine({
+        storageManager: mockStorageManager,
+        orchestrator: mockOrchestrator,
+        sandboxExecutor: mockSandboxExecutor,
+        terminalInterface: mockTerminalInterface,
+        stepLimit: 5,
+      });
+
+      const result = await stateMachine.executeLoop(
+        "task-gamma",
+        "Build module",
+      );
+
+      expect(result.status).toBe("complete");
+      expect(result.summary).toBe(
+        "I have successfully verified the workspace requirements.",
+      );
+      expect(mockSandboxExecutor.applySandboxBranch).toHaveBeenCalledWith(
+        "task-gamma",
+      );
+      expect(mockSandboxExecutor.mergeSandboxBranch).toHaveBeenCalled();
+      expect(mockSandboxExecutor.restoreOriginalBranch).not.toHaveBeenCalled();
+    });
+
+    it("should process a patch suggestion, apply it successfully, and terminate successfully on next turn", async () => {
+      vi.mocked(mockOrchestrator.generateNextTurn as any)
+        .mockResolvedValueOnce({
+          thought: "Need to update core file structure.",
+          suggestedAction: {
+            type: "patch",
+            payload: {
+              filePath: "src/core.ts",
+              find: "const original = true;",
+              replace: "const original = false;",
+            },
+          },
+          isTerminal: false,
+        } as LLMTurnResult)
+        .mockResolvedValueOnce({
+          thought: "Everything looks complete.",
+          isTerminal: true,
+        } as LLMTurnResult);
+
+      const stateMachine = new AgenticLoopStateMachine({
+        storageManager: mockStorageManager,
+        orchestrator: mockOrchestrator,
+        sandboxExecutor: mockSandboxExecutor,
+        terminalInterface: mockTerminalInterface,
+        stepLimit: 5,
+      });
+
+      const result = await stateMachine.executeLoop(
+        "task-gamma",
+        "Build module",
+      );
+
+      expect(result.status).toBe("complete");
+      expect(mockSandboxExecutor.applyCodePatch).toHaveBeenCalledWith(
+        "src/core.ts",
+        {
+          filePath: "src/core.ts",
+          find: "const original = true;",
+          replace: "const original = false;",
+        },
+      );
+      expect(mockSandboxExecutor.mergeSandboxBranch).toHaveBeenCalled();
+    });
+
+    it("should process a command suggestion, execute it successfully, and terminate successfully on next turn", async () => {
+      vi.mocked(mockOrchestrator.generateNextTurn as any)
+        .mockResolvedValueOnce({
+          thought: "Let's run local test checks.",
+          suggestedAction: {
+            type: "command",
+            payload: {
+              templateKey: "npm_test",
+              variables: { target: "src/core" },
+            },
+          },
+          isTerminal: false,
+        } as LLMTurnResult)
+        .mockResolvedValueOnce({
+          thought: "Tests pass. Done.",
+          isTerminal: true,
+        } as LLMTurnResult);
+
+      const stateMachine = new AgenticLoopStateMachine({
+        storageManager: mockStorageManager,
+        orchestrator: mockOrchestrator,
+        sandboxExecutor: mockSandboxExecutor,
+        terminalInterface: mockTerminalInterface,
+        stepLimit: 5,
+      });
+
+      const result = await stateMachine.executeLoop(
+        "task-gamma",
+        "Build module",
+      );
+
+      expect(result.status).toBe("complete");
+      expect(mockSandboxExecutor.executeCommand).toHaveBeenCalledWith({
+        commandKey: "npm_test",
+        argumentTarget: "src/core",
+      });
+      expect(mockSandboxExecutor.mergeSandboxBranch).toHaveBeenCalled();
+    });
+
+    it("should fail loop and trigger branch rollback when execution passes stepLimit thresholds", async () => {
+      // Endless loop driver
+      vi.mocked(mockOrchestrator.generateNextTurn as any).mockResolvedValue({
+        thought: "Working...",
+        suggestedAction: {
+          type: "command",
+          payload: { templateKey: "npm_test", variables: {} },
+        },
+        isTerminal: false,
+      } as LLMTurnResult);
+
+      const stateMachine = new AgenticLoopStateMachine({
+        storageManager: mockStorageManager,
+        orchestrator: mockOrchestrator,
+        sandboxExecutor: mockSandboxExecutor,
+        terminalInterface: mockTerminalInterface,
+        stepLimit: 2, // Maximum 2 loops
+      });
+
+      const result = await stateMachine.executeLoop(
+        "task-gamma",
+        "Build module",
+      );
+
+      expect(result.status).toBe("fail");
+      expect(result.summary).toContain("Loop count exhaustion");
+      expect(mockSandboxExecutor.restoreOriginalBranch).toHaveBeenCalled();
+      expect(mockSandboxExecutor.mergeSandboxBranch).not.toHaveBeenCalled();
+    });
+
+    it("should rollback to original branch if code patch fails during executeLoop", async () => {
+      vi.mocked(mockOrchestrator.generateNextTurn as any).mockResolvedValueOnce(
+        {
+          thought: "Try to patch.",
+          suggestedAction: {
+            type: "patch",
+            payload: { filePath: "broken.ts", find: "x", replace: "y" },
+          },
+          isTerminal: false,
+        } as LLMTurnResult,
+      );
+
+      vi.mocked(mockSandboxExecutor.applyCodePatch).mockRejectedValueOnce(
+        new Error("Failsystem lock issue"),
+      );
+
+      const stateMachine = new AgenticLoopStateMachine({
+        storageManager: mockStorageManager,
+        orchestrator: mockOrchestrator,
+        sandboxExecutor: mockSandboxExecutor,
+        terminalInterface: mockTerminalInterface,
+      });
+
+      const result = await stateMachine.executeLoop(
+        "task-gamma",
+        "Build module",
+      );
+
+      expect(result.status).toBe("fail");
+      expect(result.summary).toContain("Failsystem lock issue");
+      expect(mockSandboxExecutor.restoreOriginalBranch).toHaveBeenCalled();
+      expect(mockSandboxExecutor.mergeSandboxBranch).not.toHaveBeenCalled();
+    });
+
+    it("should trigger context pruning when cumulative history token count exceeds 80% threshold", async () => {
+      vi.mocked(mockOrchestrator.generateNextTurn as any)
+        .mockResolvedValueOnce({
+          thought:
+            "Some highly verbose thought content which will inflate our token estimates...",
+          suggestedAction: {
+            type: "command",
+            payload: { templateKey: "npm_test", variables: {} },
+          },
+          isTerminal: false,
+        } as LLMTurnResult)
+        .mockResolvedValueOnce({
+          thought: "Everything verified successfully.",
+          isTerminal: true,
+        } as LLMTurnResult);
+
+      const stateMachine = new AgenticLoopStateMachine({
+        storageManager: mockStorageManager,
+        orchestrator: mockOrchestrator,
+        sandboxExecutor: mockSandboxExecutor,
+        terminalInterface: mockTerminalInterface,
+        stepLimit: 5,
+        maxContextTokens: 20, // Forces pruning at very low thresholds
+      });
+
+      const result = await stateMachine.executeLoop(
+        "task-gamma",
+        "Build module",
+      );
+
+      expect(result.status).toBe("complete");
+      expect(mockOrchestrator.pruneContext).toHaveBeenCalled();
+    });
+
+    it("should trigger context pruning when iterative cycles exceed 15", async () => {
+      let mockCycles = 0;
+      // Mock generateNextTurn returning a non-terminal action, tracked by a cycle counter
+      vi.mocked(mockOrchestrator.generateNextTurn as any).mockImplementation(
+        async (_prompt: string, history: ChatMessage[]) => {
+          mockCycles++;
+          if (mockCycles >= 16) {
+            return {
+              thought: "Completed after many turns.",
+              isTerminal: true,
+            } as LLMTurnResult;
+          }
+          return {
+            thought: "Iteration cycle...",
+            suggestedAction: {
+              type: "command",
+              payload: { templateKey: "npm_test", variables: {} },
+            },
+            isTerminal: false,
+          } as LLMTurnResult;
+        },
+      );
+
+      const stateMachine = new AgenticLoopStateMachine({
+        storageManager: mockStorageManager,
+        orchestrator: mockOrchestrator,
+        sandboxExecutor: mockSandboxExecutor,
+        terminalInterface: mockTerminalInterface,
+        stepLimit: 20, // Let it run past 15 to trigger turn pruning
+        maxContextTokens: 10000, // Prevent token pruning
+      });
+
+      const result = await stateMachine.executeLoop(
+        "task-gamma",
+        "Build module",
+      );
+
+      expect(result.status).toBe("complete");
+      expect(mockOrchestrator.pruneContext).toHaveBeenCalled();
     });
   });
 });
