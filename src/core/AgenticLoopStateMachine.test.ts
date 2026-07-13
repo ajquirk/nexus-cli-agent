@@ -15,6 +15,7 @@ import {
   LLMTurnResult,
 } from "../llm/LLMOrchestrator.js";
 import { TerminalInterface } from "../terminal/TerminalInterface.js";
+import { WorkspaceSandboxExecutor } from "../execution/WorkspaceSandboxExecutor.js";
 
 describe("AgenticLoopStateMachine", () => {
   let mockStorageManager: SQLiteStorageManager;
@@ -364,7 +365,7 @@ describe("AgenticLoopStateMachine", () => {
     });
   });
 
-  // --- NEW [TASK-11] SPECIFIC executeLoop TESTS ---
+  // --- EXISTING [TASK-11] SPECIFIC executeLoop TESTS ---
 
   describe("executeLoop (TASK-11 Specific)", () => {
     it("should execute a clean loop path and succeed immediately when isTerminal is true", async () => {
@@ -619,6 +620,184 @@ describe("AgenticLoopStateMachine", () => {
 
       expect(result.status).toBe("complete");
       expect(mockOrchestrator.pruneContext).toHaveBeenCalled();
+    });
+  });
+
+  // --- NEW [TASK-12] SPECIFIC executeLoop TESTS WITH WorkspaceSandboxExecutor ---
+
+  describe("executeLoop with WorkspaceSandboxExecutor (TASK-12 Specific)", () => {
+    let mockWorkspaceExecutor: WorkspaceSandboxExecutor;
+    let initialListenerCount: number;
+
+    beforeEach(() => {
+      mockWorkspaceExecutor = {
+        initializeWorkspace: vi.fn().mockResolvedValue(undefined),
+        executeModification: vi.fn().mockResolvedValue(undefined),
+        executeVerification: vi
+          .fn()
+          .mockResolvedValue({
+            stdout: "Verification passed",
+            stderr: "",
+            exitCode: 0,
+          }),
+        finalizeWorkspace: vi.fn().mockResolvedValue(undefined),
+      } as unknown as WorkspaceSandboxExecutor;
+      initialListenerCount = process.listenerCount("SIGINT");
+    });
+
+    afterEach(() => {
+      expect(process.listenerCount("SIGINT")).toBe(initialListenerCount);
+    });
+
+    it("should successfully execute modification and verification, commit changes, and complete", async () => {
+      vi.mocked(mockOrchestrator.generateNextTurn as any)
+        .mockResolvedValueOnce({
+          thought: "Applying search replace patch to fix the email constraint.",
+          suggestedAction: {
+            type: "patch",
+            payload: {
+              filePath: "src/models/User.ts",
+              find: "email: string",
+              replace: "email: string; // unique",
+            },
+          },
+          isTerminal: false,
+        } as LLMTurnResult)
+        .mockResolvedValueOnce({
+          thought: "Running tests to verify uniqueness.",
+          suggestedAction: {
+            type: "command",
+            payload: {
+              templateKey: "npm_test",
+              variables: { target: "src/models/User.ts" },
+            },
+          },
+          isTerminal: false,
+        } as LLMTurnResult)
+        .mockResolvedValueOnce({
+          thought: "Tests passed. Complete.",
+          isTerminal: true,
+        } as LLMTurnResult);
+
+      const stateMachine = new AgenticLoopStateMachine({
+        storageManager: mockStorageManager,
+        orchestrator: mockOrchestrator,
+        workspaceSandboxExecutor: mockWorkspaceExecutor,
+        terminalInterface: mockTerminalInterface,
+        stepLimit: 5,
+      });
+
+      const result = await stateMachine.executeLoop(
+        "task-123",
+        "Implement unique constraint on email",
+      );
+
+      expect(result.status).toBe("complete");
+      expect(result.summary).toContain("Complete");
+
+      expect(mockWorkspaceExecutor.initializeWorkspace).toHaveBeenCalledWith(
+        "task-123",
+      );
+      expect(mockWorkspaceExecutor.executeModification).toHaveBeenCalledWith(
+        "task-123",
+        {
+          filePath: "src/models/User.ts",
+          find: "email: string",
+          replace: "email: string; // unique",
+        },
+      );
+      expect(mockWorkspaceExecutor.executeVerification).toHaveBeenCalledWith(
+        "task-123",
+        "npm_test",
+        { target: "src/models/User.ts" },
+      );
+      expect(mockWorkspaceExecutor.finalizeWorkspace).toHaveBeenCalledWith(
+        "task-123",
+        true,
+      );
+    });
+
+    it("should rollback workspace and fail when a modification throws an error", async () => {
+      vi.mocked(mockOrchestrator.generateNextTurn as any).mockResolvedValueOnce(
+        {
+          thought: "Applying invalid patch.",
+          suggestedAction: {
+            type: "patch",
+            payload: {
+              filePath: "src/models/User.ts",
+              find: "email",
+              replace: "invalid",
+            },
+          },
+          isTerminal: false,
+        } as LLMTurnResult,
+      );
+
+      vi.mocked(
+        mockWorkspaceExecutor.executeModification,
+      ).mockRejectedValueOnce(
+        new Error("AmbiguousPatchError: multiple matches found"),
+      );
+
+      const stateMachine = new AgenticLoopStateMachine({
+        storageManager: mockStorageManager,
+        orchestrator: mockOrchestrator,
+        workspaceSandboxExecutor: mockWorkspaceExecutor,
+        terminalInterface: mockTerminalInterface,
+      });
+
+      const result = await stateMachine.executeLoop(
+        "task-123",
+        "Implement unique constraint on email",
+      );
+
+      expect(result.status).toBe("fail");
+      expect(result.summary).toContain("AmbiguousPatchError");
+      expect(mockWorkspaceExecutor.finalizeWorkspace).toHaveBeenCalledWith(
+        "task-123",
+        false,
+      );
+    });
+
+    it("should handle SIGINT during executeLoop, restore workspace, and reject with SIGINT error", async () => {
+      vi.mocked(mockTerminalInterface.requestUserApproval).mockResolvedValue(
+        false,
+      );
+
+      let triggerSigint: () => void = () => {};
+      const longRunningPromise = new Promise<LLMTurnResult>(() => {
+        triggerSigint = () => {
+          process.emit("SIGINT");
+        };
+      });
+
+      vi.mocked(mockOrchestrator.generateNextTurn as any).mockReturnValue(
+        longRunningPromise,
+      );
+
+      const stateMachine = new AgenticLoopStateMachine({
+        storageManager: mockStorageManager,
+        orchestrator: mockOrchestrator,
+        workspaceSandboxExecutor: mockWorkspaceExecutor,
+        terminalInterface: mockTerminalInterface,
+      });
+
+      const executePromise = stateMachine.executeLoop(
+        "task-sigint",
+        "Long running task",
+      );
+
+      // Give event loop a tick to register signal handler
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      triggerSigint();
+
+      await expect(executePromise).rejects.toThrow(
+        "Execution interrupted by user (SIGINT)",
+      );
+      expect(mockWorkspaceExecutor.finalizeWorkspace).toHaveBeenCalledWith(
+        "task-sigint",
+        false,
+      );
     });
   });
 });
