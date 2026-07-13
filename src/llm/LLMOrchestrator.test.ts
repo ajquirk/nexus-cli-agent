@@ -354,3 +354,76 @@ describe("VercelLLMOrchestrator PRD Turn Generation (TASK-09)", () => {
     expect(result.suggestedAction).toBeUndefined();
   });
 });
+
+describe("VercelLLMOrchestrator.pruneContext (TASK-10)", () => {
+  let mockStorageManager: any;
+  let mockSleep: any;
+  const dummyModel = {} as LanguageModel;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("should return history unmodified if history length is too short to benefit from pruning", async () => {
+    const history: ChatMessage[] = [
+      { role: "system", content: "You are an agent." },
+      { role: "user", content: "Solve this task." },
+      { role: "assistant", content: "I will do X." },
+      { role: "user", content: "Success." },
+    ];
+
+    const orchestrator = new VercelLLMOrchestrator({ model: dummyModel });
+    const pruned = await orchestrator.pruneContext(history);
+
+    expect(pruned).toEqual(history);
+  });
+
+  it("should compress intermediate messages when history has 20 messages (10 turns)", async () => {
+    // 20 messages:
+    // Msg 0: system instruction
+    // Msg 1: initial user task instruction
+    // Msg 2-15: 14 intermediate interaction messages (7 turns)
+    // Msg 16-19: 4 messages (last 2 active turns)
+    const history: ChatMessage[] = [
+      { role: "system", content: "System Instruction" },
+      { role: "user", content: "Task Goal" },
+      ...Array.from({ length: 14 }, (_, idx) => ({
+        role: idx % 2 === 0 ? ("assistant" as const) : ("user" as const),
+        content: `Intermediate step ${idx}`,
+      })),
+      { role: "assistant", content: "Action 15" },
+      { role: "user", content: "Result 15" },
+      { role: "assistant", content: "Action 16" },
+      { role: "user", content: "Result 16" },
+    ];
+
+    vi.mocked(generateText).mockResolvedValue({
+      text: "The agent searched for files and modified user.ts",
+    } as any);
+
+    const orchestrator = new VercelLLMOrchestrator({ model: dummyModel });
+    const pruned = await orchestrator.pruneContext(history);
+
+    // Assert that the returned history length is reduced to 7:
+    // [system, initial user, summaryMessage, last 2 turns (4 messages)]
+    expect(pruned).toHaveLength(7);
+
+    // Assert system and initial user prompt are preserved
+    expect(pruned[0]).toEqual(history[0]);
+    expect(pruned[1]).toEqual(history[1]);
+
+    // Assert intermediate turns are summarized
+    expect(pruned[2].role).toBe("system");
+    expect(pruned[2].content).toContain(
+      "The agent searched for files and modified user.ts",
+    );
+
+    // Assert last 4 messages (last 2 active turns) are preserved fully intact
+    expect(pruned[3]).toEqual(history[16]);
+    expect(pruned[4]).toEqual(history[17]);
+    expect(pruned[5]).toEqual(history[18]);
+    expect(pruned[6]).toEqual(history[19]);
+
+    expect(generateText).toHaveBeenCalled();
+  });
+});

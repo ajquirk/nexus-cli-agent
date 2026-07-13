@@ -52,6 +52,9 @@ export interface LLMOrchestrator {
     initialPrompt: string,
     history: ChatMessage[],
   ): Promise<LLMTurnResult>;
+
+  // PRD Context Pruning signature (Added for [TASK-10])
+  pruneContext(history: ChatMessage[]): Promise<ChatMessage[]>;
 }
 
 export namespace LLMOrchestrator {
@@ -454,5 +457,52 @@ export class VercelLLMOrchestrator implements LLMOrchestrator {
       }
       // --- END OF PRD PORT-BASED SYSTEM ORCHESTRATOR ---
     }
+  }
+
+  // Active implementation for [TASK-10]
+  async pruneContext(history: ChatMessage[]): Promise<ChatMessage[]> {
+    const isSystemAndUser =
+      history[0]?.role === "system" && history[1]?.role === "user";
+    const initialCount = isSystemAndUser ? 2 : 1;
+
+    // If there are no intermediate steps to summarize, return a copy of the history directly
+    if (history.length <= initialCount + 4) {
+      return [...history];
+    }
+
+    const initialMessages = history.slice(0, initialCount);
+    const trailingMessages = history.slice(history.length - 4);
+    const intermediateMessages = history.slice(
+      initialCount,
+      history.length - 4,
+    );
+
+    let summaryText = "";
+    try {
+      const prompt =
+        `Summarize the following intermediate agent execution messages into a single, highly cohesive and concise system summary. Focus on what was done, what files were changed, and the results of the execution:\n\n` +
+        intermediateMessages
+          .map(
+            (msg, idx) =>
+              `[Message ${idx + 1}] Role: ${msg.role}\nContent: ${msg.content}`,
+          )
+          .join("\n\n");
+
+      const response = await generateText({
+        model: this.model,
+        prompt,
+      });
+      summaryText = response.text || "Summary of intermediate execution steps.";
+    } catch (error) {
+      const actionsCount = intermediateMessages.length;
+      summaryText = `Automatic summary of ${actionsCount} intermediate turns.`;
+    }
+
+    const summaryMessage: ChatMessage = {
+      role: "system",
+      content: `[System Update - Summary of previous turns]: ${summaryText}`,
+    };
+
+    return [...initialMessages, summaryMessage, ...trailingMessages];
   }
 }
